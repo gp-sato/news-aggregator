@@ -1,12 +1,31 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
+  color-scheme: light dark;
+}
+
+:root, .light {
+  /* Light Theme */
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card-bg: rgba(255, 255, 255, 0.8);
+  --card-border: rgba(0, 0, 0, 0.08);
+  --accent: #3b82f6;
+  --accent-glow: rgba(59, 130, 246, 0.1);
+  --text-gradient: linear-gradient(135deg, #0f172a 0%, #475569 100%);
+}
+
+.dark {
+  /* Dark Theme */
   --background: #050505;
   --foreground: #f0f0f0;
   --card-bg: rgba(255, 255, 255, 0.03);
   --card-border: rgba(255, 255, 255, 0.08);
   --accent: #3b82f6;
   --accent-glow: rgba(59, 130, 246, 0.2);
+  --text-gradient: linear-gradient(135deg, #fff 0%, #aaa 100%);
 }
 
 @theme inline {
@@ -23,6 +42,7 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* Glassmorphism utility */
@@ -31,18 +51,27 @@ body {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--card-border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+}
+
+.dark .glass {
   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }
 
 .glass-hover:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.15);
+  background: color-mix(in srgb, var(--card-bg), white 5%);
+  border-color: color-mix(in srgb, var(--card-border), white 10%);
   transform: translateY(-2px);
   transition: all 0.3s ease;
 }
 
+.dark .glass-hover:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
 .text-gradient {
-  background: linear-gradient(135deg, #fff 0%, #aaa 100%);
+  background: var(--text-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }

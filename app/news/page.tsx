@@ -1,4 +1,5 @@
 import { Metadata } from 'next';
+import { ThemeToggle } from '@/components/theme-toggle';
 
 export const metadata: Metadata = {
   title: 'Antigravity News Aggregator - Premium Feed',
@@ -30,6 +31,10 @@ export default async function NewsPage() {
 
   return (
     <main className="min-h-screen py-12 px-4 md:px-8 max-w-4xl mx-auto">
+      <div className="flex justify-end mb-4">
+        <ThemeToggle />
+      </div>
+      
       <header className="mb-12 text-center">
         <h1 className="text-4xl md:text-6xl font-bold mb-4 text-gradient tracking-tight">
           News Feed
