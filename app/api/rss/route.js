@@ -28,21 +28,26 @@ const SOURCES = [
 export async function GET() {
   try {
     const feedPromises = SOURCES.map(async (source) => {
-      try {
-        const feed = await parser.parseURL(source.url);
-        return feed.items.map((item) => ({
-          ...item,
-          sourceName: source.name,
-          sourceId: source.id,
-        }));
-      } catch (error) {
-        console.error(`Failed to fetch ${source.name}:`, error);
-        return [];
-      }
+      const feed = await parser.parseURL(source.url);
+      return feed.items.map((item) => ({
+        ...item,
+        sourceName: source.name,
+        sourceId: source.id,
+      }));
     });
 
-    const allFeeds = await Promise.all(feedPromises);
-    const flattenedItems = allFeeds.flat();
+    const results = await Promise.allSettled(feedPromises);
+
+    const flattenedItems = results
+      .map((result, index) => {
+        if (result.status === "fulfilled") {
+          return result.value;
+        } else {
+          console.error(`Failed to fetch ${SOURCES[index].name}:`, result.reason);
+          return [];
+        }
+      })
+      .flat();
 
     // Sort by date (newest first)
     // rss-parser provides isoDate for most feeds
