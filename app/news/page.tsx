@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 async function getNews() {
   // Use absolute URL for server component fetching internal API
-  const res = await fetch("http://localhost:3000/api/rss", { cache: "no-store" });
+  const res = await fetch("http://localhost:3000/api/rss", { next: { revalidate: 60 * 10 } });
   if (!res.ok) {
     throw new Error("Failed to fetch news");
   }
@@ -34,7 +34,7 @@ export default async function NewsPage() {
       <div className="flex justify-end mb-4">
         <ThemeToggle />
       </div>
-      
+
       <header className="mb-12 text-center">
         <h1 className="text-4xl md:text-6xl font-bold mb-4 text-gradient tracking-tight">
           News Feed
@@ -46,8 +46,8 @@ export default async function NewsPage() {
 
       <div className="space-y-6">
         {items.map((item: any) => (
-          <article 
-            key={item.link} 
+          <article
+            key={item.link}
             className="glass glass-hover rounded-2xl p-6 transition-all duration-300 group"
           >
             <div className="flex flex-wrap items-center gap-3 mb-4">
@@ -58,10 +58,10 @@ export default async function NewsPage() {
                 {formatDate(item.isoDate || item.pubDate)}
               </time>
             </div>
-            
-            <a 
-              href={item.link} 
-              target="_blank" 
+
+            <a
+              href={item.link}
+              target="_blank"
               rel="noopener noreferrer"
               className="block group-hover:text-accent transition-colors"
             >
@@ -69,11 +69,11 @@ export default async function NewsPage() {
                 {item.title}
               </h2>
             </a>
-            
+
             <div className="flex justify-end">
-              <a 
-                href={item.link} 
-                target="_blank" 
+              <a
+                href={item.link}
+                target="_blank"
                 rel="noopener noreferrer"
                 className="text-sm text-accent opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 font-medium"
               >
