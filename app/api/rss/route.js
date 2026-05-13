@@ -49,12 +49,12 @@ export async function GET() {
       })
       .flat();
 
-    // Sort by date (newest first)
+    // Sort by date (oldest first)
     // rss-parser provides isoDate for most feeds
     const sortedItems = flattenedItems.sort((a, b) => {
       const dateA = new Date(a.isoDate || a.pubDate || 0);
       const dateB = new Date(b.isoDate || b.pubDate || 0);
-      return dateB.getTime() - dateA.getTime();
+      return dateA.getTime() - dateB.getTime();
     });
 
     return Response.json({ items: sortedItems });
