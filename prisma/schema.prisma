@@ -10,4 +10,30 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model NewsItem {
+  id             String   @id @default(cuid())
+  guid           String?  // RSSのguid
+  title          String   // 記事のタイトル
+  link           String   @unique // 記事のURL (重複保存を防ぐためuniqueが推奨)
+  pubDate        DateTime? // 公開日時 (isoDateをDate型に変換して保存)
+  creator        String?  // 作成者/著者
+  summary        String?  // 概要
+  content        String?  // コンテンツ本文
+  contentSnippet String?  // コンテンツの抜粋
+  categories     String[] // カテゴリ一覧 (PostgreSQLは配列型をサポート)
+
+  // Enclosure (画像や音声などのメディアファイル情報)
+  enclosureUrl    String?
+  enclosureLength Int?
+  enclosureType   String?
+
+  // 追加メタデータ (route.jsで追加したもの)
+  sourceId       String   // 例: "google", "nhk"
+  sourceName     String   // 例: "Google News", "NHK ニュース"
+
+  createdAt      DateTime @default(now()) // DBへの保存日時
+  updatedAt      DateTime @updatedAt      // レコード更新日時
 }
