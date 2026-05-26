@@ -1,5 +1,6 @@
 import { Metadata } from 'next';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { getNewsFromDb } from '@/lib/news';
 
 export const metadata: Metadata = {
   title: 'Antigravity News Aggregator - Premium Feed',
@@ -7,66 +8,18 @@ export const metadata: Metadata = {
 };
 
 async function getNews() {
-  // 1. DBから既存のニュースを取得
-  const dbRes = await fetch("http://localhost:3000/api/storage", { cache: 'no-store' });
-  if (!dbRes.ok) {
-    throw new Error("Failed to fetch existing news from DB");
+  try {
+    const items = await getNewsFromDb();
+    return { items };
+  } catch (error) {
+    console.error("Failed to load news from database:", error);
+    return { items: [] };
   }
-  const dbItems = await dbRes.json();
-  const existingLinks = new Set(dbItems.map((item: any) => item.link));
-
-  // 2. RSSから最新のニュースを取得 (外部サーバーへの負荷軽減・アクセス拒否対策として10分間キャッシュ)
-  const rssRes = await fetch("http://localhost:3000/api/rss", { next: { revalidate: 60 * 10 } });
-  if (!rssRes.ok) {
-    throw new Error("Failed to fetch RSS news");
-  }
-  const rssData = await rssRes.json();
-  const rssItems = rssData.items || [];
-
-  // 3. 重複を取り除く (DBに存在しないものだけを抽出)
-  const newItems = rssItems.filter((item: any) => !existingLinks.has(item.link));
-
-  // 4. 新しいニュースがあればDBに保存し、型を統一するため再取得する
-  let finalItems = dbItems;
-  if (newItems.length > 0) {
-    const postRes = await fetch("http://localhost:3000/api/storage", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(newItems),
-    });
-    
-    if (postRes.ok) {
-      // 保存成功後、DBの型（NewsItem）で統一された全データを再取得する
-      const refetchRes = await fetch("http://localhost:3000/api/storage", { cache: 'no-store' });
-      if (refetchRes.ok) {
-        finalItems = await refetchRes.json();
-      }
-    } else {
-      console.error("Failed to save new items to DB");
-      // 保存に失敗した場合のフォールバック（表示に必要なpubDateを補完して結合）
-      const normalizedNewItems = newItems.map((item: any) => ({
-        ...item,
-        pubDate: item.isoDate || item.pubDate,
-      }));
-      finalItems = [...dbItems, ...normalizedNewItems];
-    }
-  }
-
-  // 5. 統一されたDBのニュースを日付順(新しい順)にソート
-  const allItems = finalItems.sort((a: any, b: any) => {
-    // dbItemsにはpubDateが存在するため、一貫してソート可能
-    const dateA = new Date(a.pubDate || a.isoDate || 0);
-    const dateB = new Date(b.pubDate || b.isoDate || 0);
-    return dateB.getTime() - dateA.getTime();
-  });
-
-  return { items: allItems };
 }
 
-function formatDate(dateStr: string) {
-  const date = new Date(dateStr);
+function formatDate(dateInput: string | Date | null | undefined) {
+  if (!dateInput) return '不明な日付';
+  const date = new Date(dateInput);
   return new Intl.DateTimeFormat('ja-JP', {
     month: 'short',
     day: 'numeric',
@@ -74,6 +27,7 @@ function formatDate(dateStr: string) {
     minute: '2-digit',
   }).format(date);
 }
+
 
 export default async function NewsPage() {
   const { items } = await getNews();
