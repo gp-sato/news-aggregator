@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 📰 News Aggregator
 
-## Getting Started
+Next.js をベースに、PostgreSQL (Supabase) + Prisma を使用して RSS フィードからニュースを定期的に取得・集約するアプリケーションです。
 
-First, run the development server:
+## 🛠 テクノロジー・スタック
+
+- **フロントエンド / バックエンド**: [Next.js](https://nextjs.org/) (TypeScript, App Router)
+- **データベース**: [PostgreSQL (Supabase)](https://supabase.com/)
+- **ORM**: [Prisma v7](https://www.prisma.io/)
+- **スタイリング**: [Tailwind CSS v4](https://tailwindcss.com/)
+- **デプロイ / 自動実行**: [Vercel](https://vercel.com/) (Hosting & Vercel Cron)
+
+---
+
+## ⚙️ セットアップ手順
+
+### 1. Supabase のデータベース作成
+1. [Supabase](https://supabase.com/) にサインインし、新しいプロジェクトを作成します。
+2. プロジェクト作成時に設定した **Database Password** を安全な場所に控えておきます。
+
+### 2. 環境変数の設定
+1. プロジェクトルートにある環境変数のテンプレートファイルをコピーします。
+   ```bash
+   cp .env.example .env
+   ```
+2. `.env` ファイルを開き、環境変数を設定します。
+   * **接続情報の取得**: Supabase 管理画面の **Connect** タブ（あるいは Project Settings > Database）から **ORM** > **Prisma** を選択します。
+   * 表示される `DATABASE_URL` と `DIRECT_URL` の接続文字列をそれぞれ `.env` に貼り付けます。
+   * その際、`[YOUR-PASSWORD]` となっている箇所を、手順1で控えた自身のデータベースパスワードに置き換えてください。
+   * **Vercel Cron を使用する場合**: `NODE_ENV="production"` および `CRON_SECRET`（任意のランダムなセキュリティキー）を設定します。
+
+### 3. パッケージのインストールとデータベース反映
+プロジェクトのセットアップに必要なライブラリをインストールし、データベースにスキーマを反映させます。
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# ライブラリのインストール
+npm install
+
+# データベーススキーマの作成（Supabaseにテーブルを同期）
+npx prisma migrate dev
+
+# Prisma Clientの生成
+npx prisma generate
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 4. 開発サーバーの起動
+```bash
+npm run dev
+```
+起動後、ブラウザで [http://localhost:3000](http://localhost:3000) にアクセスします。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 🚀 使用方法
 
-## Learn More
+### 📰 ニュースを確認する
+* ブラウザで [http://localhost:3000/news](http://localhost:3000/news) にアクセスして、収集したニュース一覧を確認・閲覧できます。
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 🔄 ニュースを手動で同期（収集）する
+* ローカル開発環境では、ブラウザで [http://localhost:3000/api/cron/fetch-news](http://localhost:3000/api/cron/fetch-news) にアクセスすると、ニュースの取得処理が実行されます。
+* ※本番環境（Vercel）では、セキュリティ保護のため Vercel Cron（`CRON_SECRET` を用いた認証）によってのみ定期自動実行されます。
