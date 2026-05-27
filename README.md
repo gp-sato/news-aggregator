@@ -59,3 +59,18 @@ npm run dev
 ### 🔄 ニュースを手動で同期（収集）する
 * ローカル開発環境では、ブラウザで [http://localhost:3000/api/cron/fetch-news](http://localhost:3000/api/cron/fetch-news) にアクセスすると、ニュースの取得処理が実行されます。
 * ※本番環境（Vercel）では、セキュリティ保護のため Vercel Cron（`CRON_SECRET` を用いた認証）によってのみ定期自動実行されます。
+
+---
+
+## 🔒 セキュリティに関する注意点 (Supabase RLS)
+
+本アプリケーションはサーバーサイドから Prisma (管理者接続) を使用してデータベースに直接接続するため、基本的には Supabase の **RLS（Row Level Security）の影響を受けません（バイパスされます）**。
+
+しかし、Supabase が自動で公開する REST API 経由での予期せぬデータ漏洩を防ぐため、以下のセキュリティ設定を推奨します。
+
+### 推奨設定手順
+1. Supabase ダッシュボードの **Table Editor** に移動します。
+2. `NewsItem` テーブルを選択し、画面右上の **RLS (Row Level Security)** を **Enable（有効）** にします。
+3. **ポリシー（Policies）は作成しないでください。**
+   * ポリシーを作成しないことで、外部の API 経由からの読み書きがすべて遮断されます。
+   * アプリケーション（Prisma）からは直接接続しているため、ポリシーが空の状態でも問題なく正常に動作します。
