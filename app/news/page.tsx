@@ -3,7 +3,7 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import { getNewsFromDb } from '@/lib/news';
 
 export const metadata: Metadata = {
-  title: 'Antigravity News Aggregator - Premium Feed',
+  title: 'NexusFeed - Premium Feed',
   description: 'A curated list of news from multiple Japanese sources, updated in real-time.',
 };
 
@@ -40,7 +40,7 @@ export default async function NewsPage() {
 
       <header className="mb-12 text-center">
         <h1 className="text-4xl md:text-6xl font-bold mb-4 text-gradient tracking-tight">
-          News Feed
+          NexusFeed
         </h1>
         <p className="text-foreground/60 text-lg">
           複数のソースから統合された最新のニュース
@@ -91,7 +91,7 @@ export default async function NewsPage() {
       </div>
 
       <footer className="mt-16 text-center text-foreground/30 text-sm border-t border-card-border pt-8">
-        &copy; {new Date().getFullYear()} News Aggregator. Crafted with precision.
+        &copy; {new Date().getFullYear()} NexusFeed. Crafted with precision.
       </footer>
     </main>
   );

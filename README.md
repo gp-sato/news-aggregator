@@ -1,6 +1,6 @@
-# 📰 News Aggregator
+# 📰 NexusFeed
 
-Next.js をベースに、PostgreSQL (Supabase) + Prisma を使用して RSS フィードからニュースを定期的に取得・集約するアプリケーションです。
+Next.js をベースに、PostgreSQL (Supabase) + Prisma を使用して RSS フィードからニュースを定期的に取得・集約するアプリケーション「NexusFeed」です。
 
 ## 🛠 テクノロジー・スタック
 
