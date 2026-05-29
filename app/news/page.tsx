@@ -2,6 +2,8 @@ import { Metadata } from 'next';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { getNewsFromDb } from '@/lib/news';
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'NexusFeed - Premium Feed',
   description: 'A curated list of news from multiple Japanese sources, updated in real-time.',
