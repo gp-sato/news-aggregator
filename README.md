@@ -54,7 +54,7 @@ npm run dev
 ## 🚀 使用方法
 
 ### 📰 ニュースを確認する
-* ブラウザで [http://localhost:3000/news](http://localhost:3000/news) にアクセスして、収集したニュース一覧を確認・閲覧できます。
+* ブラウザで [http://localhost:3000](http://localhost:3000) にアクセスして、収集したニュース一覧を確認・閲覧できます。
 
 ### 🔄 ニュースを手動で同期（収集）する
 * ローカル開発環境では、ブラウザで [http://localhost:3000/api/cron/fetch-news](http://localhost:3000/api/cron/fetch-news) にアクセスすると、ニュースの取得処理が実行されます。
