@@ -1,4 +1,5 @@
 import { Metadata } from 'next';
+import Link from 'next/link';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { getNewsFromDb } from '@/lib/news';
 
@@ -9,9 +10,9 @@ export const metadata: Metadata = {
   description: 'A curated list of news from multiple Japanese sources, updated in real-time.',
 };
 
-async function getNews() {
+async function getNews(source?: string) {
   try {
-    const items = await getNewsFromDb();
+    const items = await getNewsFromDb(source);
     return { items };
   } catch (error) {
     console.error("Failed to load news from database:", error);
@@ -30,9 +31,39 @@ function formatDate(dateInput: string | Date | null | undefined) {
   }).format(date);
 }
 
+interface PageProps {
+  searchParams: Promise<{ source?: string }> | { source?: string };
+}
 
-export default async function NewsPage() {
-  const { items } = await getNews();
+
+export default async function NewsPage({ searchParams }: PageProps) {
+  const resolvedSearchParams = await searchParams;
+  const currentSource = resolvedSearchParams.source || 'all';
+
+  const { items } = await getNews(currentSource);
+
+  const tabs = [
+    {
+      id: 'all',
+      label: 'すべて',
+    },
+    {
+      id: 'google',
+      label: 'Google News'
+    },
+    {
+      id: 'nhk',
+      label: 'NHK ニュース',
+    },
+    {
+      id: 'bbc',
+      label: 'BBC News (JP)',
+    },
+    {
+      id: 'itmedia',
+      label: 'ITmedia',
+    },
+  ];
 
   return (
     <main className="min-h-screen py-12 px-4 md:px-8 max-w-4xl mx-auto">
@@ -48,6 +79,24 @@ export default async function NewsPage() {
           複数のソースから統合された最新のニュース
         </p>
       </header>
+
+      <div className='flex space-x-2 border-b border-card-border mb-6 overflow-x-auto overflow-y-hidden'>
+        {tabs.map((tab) => {
+          const isActive = currentSource === tab.id;
+          return (
+            <Link
+              key={tab.id}
+              href={tab.id === 'all' ? '/' : `/?source=${tab.id}`}
+              className={`px-4 py-2 text-sm font-medium transition-colors duration-200 -mb-px whitespace-nowrap ${isActive
+                ? 'border-b-2 border-accent text-accent'
+                : 'text-foreground/50 hover:text-foreground/80 border-b-2 border-transparent'
+                }`}
+            >
+              {tab.label}
+            </Link>
+          );
+        })}
+      </div>
 
       <div className="space-y-6">
         {items.map((item: any) => (

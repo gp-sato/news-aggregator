@@ -105,8 +105,11 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
 /**
  * データベースから保存済みのニュース一覧を取得します。
  */
-export async function getNewsFromDb() {
+export async function getNewsFromDb(source?: string) {
+  const whereCondition = source && source !== 'all' ? { sourceId: source } : undefined;
+
   return prisma.newsItem.findMany({
+    where: whereCondition,
     orderBy: {
       pubDate: 'desc',
     },
@@ -149,7 +152,7 @@ export async function saveNewsToDb(items: FeedItem[]) {
 export async function syncNews() {
   console.log('Starting RSS feed synchronization...')
   const latestItems = await fetchRssFeeds()
-  
+
   if (latestItems.length === 0) {
     console.log('No items retrieved from RSS feeds.')
     return { count: 0 }
@@ -158,6 +161,6 @@ export async function syncNews() {
   console.log(`Fetched ${latestItems.length} items from RSS. Saving to DB...`)
   const result = await saveNewsToDb(latestItems)
   console.log(`Synchronization complete. Saved ${result.count} new news items.`)
-  
+
   return result
 }
