@@ -60,7 +60,7 @@ export default async function NewsPage() {
                 {item.sourceName}
               </span>
               <time className="text-sm text-foreground/40 font-medium">
-                {formatDate(item.isoDate || item.pubDate)}
+                {formatDate(item.pubDate)}
               </time>
             </div>
 
