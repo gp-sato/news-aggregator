@@ -25,6 +25,7 @@ function formatDate(dateInput: string | Date | null | undefined) {
   if (!dateInput) return '不明な日付';
   const date = new Date(dateInput);
   return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
