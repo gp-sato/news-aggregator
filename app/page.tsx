@@ -2,6 +2,7 @@ import { Metadata } from 'next';
 import Link from 'next/link';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { getNewsFromDb } from '@/lib/news';
+import { TABS } from '@/lib/sources';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,29 +43,6 @@ export default async function NewsPage({ searchParams }: PageProps) {
 
   const { items } = await getNews(currentSource);
 
-  const tabs = [
-    {
-      id: 'all',
-      label: 'すべて',
-    },
-    {
-      id: 'google',
-      label: 'Google News'
-    },
-    {
-      id: 'nhk',
-      label: 'NHK ニュース',
-    },
-    {
-      id: 'bbc',
-      label: 'BBC News (JP)',
-    },
-    {
-      id: 'itmedia',
-      label: 'ITmedia',
-    },
-  ];
-
   return (
     <main className="min-h-screen py-12 px-4 md:px-8 max-w-4xl mx-auto">
       <div className="flex justify-end mb-4">
@@ -81,7 +59,7 @@ export default async function NewsPage({ searchParams }: PageProps) {
       </header>
 
       <div className='flex space-x-2 border-b border-card-border mb-6 overflow-x-auto overflow-y-hidden'>
-        {tabs.map((tab) => {
+        {TABS.map((tab) => {
           const isActive = currentSource === tab.id;
           return (
             <Link

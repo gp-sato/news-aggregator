@@ -1,5 +1,6 @@
 import Parser from 'rss-parser'
 import { prisma } from './prisma'
+import { SOURCES } from './sources'
 
 export interface FeedItem {
   guid?: string
@@ -20,29 +21,6 @@ export interface FeedItem {
   sourceId: string
   sourceName: string
 }
-
-export const SOURCES = [
-  {
-    id: 'google',
-    name: 'Google News',
-    url: 'https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja',
-  },
-  {
-    id: 'nhk',
-    name: 'NHK ニュース',
-    url: 'https://news.web.nhk/n-data/conf/na/rss/cat0.xml',
-  },
-  {
-    id: 'bbc',
-    name: 'BBC News (JP)',
-    url: 'https://feeds.bbci.co.uk/japanese/rss.xml',
-  },
-  {
-    id: 'itmedia',
-    name: 'ITmedia',
-    url: 'https://rss.itmedia.co.jp/rss/2.0/itmedia_all.xml',
-  },
-]
 
 /**
  * 外部のRSSソースから最新のニュース記事を取得します。
