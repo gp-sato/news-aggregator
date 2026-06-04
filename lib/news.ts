@@ -136,8 +136,33 @@ export async function syncNews() {
     return { count: 0 }
   }
 
-  console.log(`Fetched ${latestItems.length} items from RSS. Saving to DB...`)
-  const result = await saveNewsToDb(latestItems)
+  // RSSから取得したアイテムのリンク一覧を抽出
+  const links = latestItems.map((item) => item.link).filter(Boolean)
+
+  // DBに既に存在するリンクを取得（重複を避けるためピンポイントで検索）
+  const existingItems = await prisma.newsItem.findMany({
+    where: {
+      link: {
+        in: links,
+      },
+    },
+    select: {
+      link: true,
+    },
+  })
+
+  const existingLinks = new Set(existingItems.map((item) => item.link))
+
+  // DBに存在しない新規アイテムのみをフィルタリング
+  const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
+
+  if (newItems.length === 0) {
+    console.log('All retrieved items already exist in the database.')
+    return { count: 0 }
+  }
+
+  console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
+  const result = await saveNewsToDb(newItems)
   console.log(`Synchronization complete. Saved ${result.count} new news items.`)
 
   return result
