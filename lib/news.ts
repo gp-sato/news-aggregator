@@ -83,7 +83,7 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
 /**
  * データベースから保存済みのニュース一覧を取得します。
  */
-export async function getNewsFromDb(source?: string) {
+export async function getNewsFromDb(source?: string, skip?: number, take?: number) {
   const whereCondition = source && source !== 'all' ? { sourceId: source } : undefined;
 
   return prisma.newsItem.findMany({
@@ -91,6 +91,8 @@ export async function getNewsFromDb(source?: string) {
     orderBy: {
       pubDate: 'desc',
     },
+    skip,
+    take,
   })
 }
 
