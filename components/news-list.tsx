@@ -13,19 +13,31 @@ interface NewsItem {
   summary: string | null;
   content: string | null;
   contentSnippet: string | null;
-  categories: string[];
+  rawCategories: string[];
   enclosureUrl: string | null;
   enclosureLength: number | null;
   enclosureType: string | null;
   sourceId: string;
-  sourceName: string;
+  source: {
+    id: string;
+    name: string;
+  };
+  categories: {
+    categoryId: string;
+    method: string;
+    confidence: number | null;
+    category: {
+      id: string;
+      label: string;
+    };
+  }[];
   createdAt: string;
   updatedAt: string;
 }
 
 interface NewsListProps {
   initialItems: NewsItem[];
-  currentSource: string;
+  currentCategory: string;
 }
 
 const fetcher = (url: string) => fetch(url).then((res) => {
@@ -47,11 +59,11 @@ function formatDate(dateInput: string | null | undefined) {
   }).format(date);
 }
 
-export function NewsList({ initialItems, currentSource }: NewsListProps) {
+export function NewsList({ initialItems, currentCategory }: NewsListProps) {
   const getKey = (pageIndex: number, previousPageData: NewsItem[]) => {
     // 最後に到達したか、前のデータが空の場合は null を返してフェッチを停止する
     if (previousPageData && !previousPageData.length) return null;
-    return `/api/news?source=${currentSource}&page=${pageIndex + 1}&limit=20`;
+    return `/api/news?category=${currentCategory}&page=${pageIndex + 1}&limit=20`;
   };
 
   const { data, size, setSize, isValidating, error } = useSWRInfinite<NewsItem[]>(
@@ -108,11 +120,23 @@ export function NewsList({ initialItems, currentSource }: NewsListProps) {
             key={item.link}
             className="glass glass-hover rounded-2xl p-6 transition-all duration-300 group animate-in fade-in slide-in-from-bottom-4 duration-500"
           >
-            <div className="flex flex-wrap items-center gap-3 mb-4">
+            <div className="flex flex-wrap items-center gap-3 mb-4 w-full">
               <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
-                {item.sourceName}
+                {item.source.name}
               </span>
-              <time className="text-sm text-foreground/40 font-medium">
+              {item.categories && item.categories.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {item.categories.map((c) => (
+                    <span
+                      key={c.categoryId}
+                      className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
+                    >
+                      {c.category.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <time className="text-sm text-foreground/40 font-medium sm:ml-auto">
                 {formatDate(item.pubDate)}
               </time>
             </div>

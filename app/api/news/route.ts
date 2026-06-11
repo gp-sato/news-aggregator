@@ -3,6 +3,7 @@ import { getNewsFromDb } from '@/lib/news';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+  const category = searchParams.get('category') || 'all';
   const source = searchParams.get('source') || 'all';
   const page = parseInt(searchParams.get('page') || '1', 10);
   const limit = parseInt(searchParams.get('limit') || '20', 10);
@@ -14,7 +15,12 @@ export async function GET(request: NextRequest) {
   const skip = (validatedPage - 1) * validatedLimit;
 
   try {
-    const items = await getNewsFromDb(source, skip, validatedLimit);
+    const items = await getNewsFromDb({
+      category,
+      source: source !== 'all' ? source : undefined,
+      skip,
+      take: validatedLimit,
+    });
     return NextResponse.json(items, {
       headers: {
         'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=30',

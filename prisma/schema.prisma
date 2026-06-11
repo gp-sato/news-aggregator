@@ -11,6 +11,34 @@ datasource db {
   provider  = "postgresql"
 }
 
+model Source {
+  id                String     @id
+  name              String
+  url               String     @unique
+  enabled           Boolean    @default(true)
+  language          String?
+  country           String?
+  defaultCategoryId String
+  lastFetchedAt     DateTime?
+  lastError         String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  defaultCategory   Category   @relation("DefaultCategorySources", fields: [defaultCategoryId], references: [id])
+  articles          NewsItem[]
+}
+
+model Category {
+  id          String   @id
+  label       String
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sources     Source[] @relation("DefaultCategorySources")
+  articles    NewsItemCategory[]
+}
+
 model NewsItem {
   id             String   @id @default(cuid())
   guid           String?  // RSSのguid
@@ -21,17 +49,33 @@ model NewsItem {
   summary        String?  // 概要
   content        String?  // コンテンツ本文
   contentSnippet String?  // コンテンツの抜粋
-  categories     String[] // カテゴリ一覧 (PostgreSQLは配列型をサポート)
+  rawCategories  String[] // 元のRSSカテゴリ一覧
 
   // Enclosure (画像や音声などのメディアファイル情報)
   enclosureUrl    String?
   enclosureLength Int?
   enclosureType   String?
 
-  // 追加メタデータ (route.jsで追加したもの)
-  sourceId       String   // 例: "google", "nhk"
-  sourceName     String   // 例: "Google News", "NHK ニュース"
+  sourceId        String
+  source          Source   @relation(fields: [sourceId], references: [id])
 
-  createdAt      DateTime @default(now()) // DBへの保存日時
-  updatedAt      DateTime @updatedAt      // レコード更新日時
+  categories      NewsItemCategory[]
+
+  createdAt       DateTime @default(now()) // DBへの保存日時
+  updatedAt       DateTime @updatedAt      // レコード更新日時
 }
+
+model NewsItemCategory {
+  newsItemId String
+  categoryId String
+  method     String   @default("source-default")
+  confidence Float?
+  createdAt  DateTime @default(now())
+
+  newsItem   NewsItem @relation(fields: [newsItemId], references: [id], onDelete: Cascade)
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  @@id([newsItemId, categoryId])
+  @@index([categoryId])
+}
+

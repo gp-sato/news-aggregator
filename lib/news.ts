@@ -1,6 +1,5 @@
 import Parser from 'rss-parser'
 import { prisma } from './prisma'
-import { SOURCES } from './sources'
 
 export interface FeedItem {
   guid?: string
@@ -19,7 +18,6 @@ export interface FeedItem {
     type?: string
   }
   sourceId: string
-  sourceName: string
 }
 
 /**
@@ -27,7 +25,13 @@ export interface FeedItem {
  */
 export async function fetchRssFeeds(): Promise<FeedItem[]> {
   const parser = new Parser()
-  const feedPromises = SOURCES.map(async (source) => {
+  
+  // データベースから有効なソースを取得
+  const dbSources = await prisma.source.findMany({
+    where: { enabled: true },
+  })
+
+  const feedPromises = dbSources.map(async (source) => {
     try {
       // 外部サーバーへの負荷軽減とアクセスの高速化のため、Next.jsのData Cache（10分間再検証）を適用してXMLを取得します
       const res = await fetch(source.url, { next: { revalidate: 60 * 10 } })
@@ -36,6 +40,13 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
       }
       const xmlString = await res.text()
       const feed = await parser.parseString(xmlString)
+
+      // 最終取得日時を更新
+      await prisma.source.update({
+        where: { id: source.id },
+        data: { lastFetchedAt: new Date(), lastError: null },
+      }).catch((err) => console.error(`Failed to update lastFetchedAt for source ${source.id}:`, err))
+
       return feed.items.map((item) => ({
         guid: item.guid,
         title: item.title || '',
@@ -52,10 +63,16 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
           type: item.enclosure.type,
         } : undefined,
         sourceId: source.id,
-        sourceName: source.name,
       }))
     } catch (error) {
       console.error(`Failed to fetch RSS from ${source.name}:`, error)
+
+      // エラー情報を記録
+      await prisma.source.update({
+        where: { id: source.id },
+        data: { lastError: String(error) },
+      }).catch((err) => console.error(`Failed to update lastError for source ${source.id}:`, err))
+
       return []
     }
   })
@@ -66,7 +83,7 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
       if (result.status === 'fulfilled') {
         return result.value
       } else {
-        console.error(`Failed to fetch ${SOURCES[index].name} feed promise:`, result.reason)
+        console.error(`Failed to fetch ${dbSources[index].name} feed promise:`, result.reason)
         return []
       }
     })
@@ -83,11 +100,37 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
 /**
  * データベースから保存済みのニュース一覧を取得します。
  */
-export async function getNewsFromDb(source?: string, skip?: number, take?: number) {
-  const whereCondition = source && source !== 'all' ? { sourceId: source } : undefined;
+export async function getNewsFromDb(params: {
+  category?: string
+  source?: string
+  skip?: number
+  take?: number
+}) {
+  const { category, source, skip, take } = params
+
+  const whereCondition = {
+    ...(source && source !== 'all' ? { sourceId: source } : {}),
+    ...(category && category !== 'all'
+      ? {
+          categories: {
+            some: {
+              categoryId: category,
+            },
+          },
+        }
+      : {}),
+  }
 
   return prisma.newsItem.findMany({
     where: whereCondition,
+    include: {
+      source: true,
+      categories: {
+        include: {
+          category: true,
+        },
+      },
+    },
     orderBy: {
       pubDate: 'desc',
     },
@@ -113,15 +156,57 @@ export async function saveNewsToDb(items: FeedItem[]) {
       summary: item.summary,
       content: item.content,
       contentSnippet: item.contentSnippet,
-      categories: item.categories || [],
+      rawCategories: item.categories || [],
       enclosureUrl: item.enclosure?.url,
       enclosureLength: item.enclosure?.length ? parseInt(String(item.enclosure.length)) : null,
       enclosureType: item.enclosure?.type,
       sourceId: item.sourceId,
-      sourceName: item.sourceName,
     })),
     skipDuplicates: true,
   })
+
+  if (result.count === 0) return { count: 0 }
+
+  // 新規追加された記事を特定してカテゴリリレーションを作成する
+  const savedArticles = await prisma.newsItem.findMany({
+    where: {
+      link: {
+        in: items.map((item) => item.link),
+      },
+    },
+    select: {
+      id: true,
+      sourceId: true,
+    },
+  })
+
+  const dbSources = await prisma.source.findMany({
+    select: {
+      id: true,
+      defaultCategoryId: true,
+    },
+  })
+
+  const sourceToCategoryMap = new Map(dbSources.map((s) => [s.id, s.defaultCategoryId]))
+
+  const joinRows = savedArticles
+    .map((article) => {
+      const categoryId = sourceToCategoryMap.get(article.sourceId)
+      if (!categoryId) return null
+      return {
+        newsItemId: article.id,
+        categoryId,
+        method: 'source-default',
+      }
+    })
+    .filter((row): row is { newsItemId: string; categoryId: string; method: string } => row !== null)
+
+  if (joinRows.length > 0) {
+    await prisma.newsItemCategory.createMany({
+      data: joinRows,
+      skipDuplicates: true,
+    })
+  }
 
   return { count: result.count }
 }
@@ -169,3 +254,4 @@ export async function syncNews() {
 
   return result
 }
+
