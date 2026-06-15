@@ -118,25 +118,27 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
         {newsItems.map((item) => (
           <article
             key={item.link}
-            className="glass glass-hover rounded-2xl p-6 transition-all duration-300 group animate-in fade-in slide-in-from-bottom-4 duration-500"
+            className="glass glass-hover rounded-xl sm:rounded-2xl p-4 sm:p-6 transition-all duration-300 group animate-in fade-in slide-in-from-bottom-4 duration-500"
           >
-            <div className="flex flex-wrap items-center gap-3 mb-4 w-full">
-              <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
-                {item.source.name}
-              </span>
-              {item.categories && item.categories.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {item.categories.map((c) => (
-                    <span
-                      key={c.categoryId}
-                      className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
-                    >
-                      {c.category.label}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <time className="text-sm text-foreground/40 font-medium sm:ml-auto">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-4 w-full min-w-0">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
+                  {item.source.name}
+                </span>
+                {item.categories && item.categories.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {item.categories.map((c) => (
+                      <span
+                        key={c.categoryId}
+                        className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
+                      >
+                        {c.category.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <time className="text-xs sm:text-sm text-foreground/40 font-medium sm:ml-auto">
                 {formatDate(item.pubDate)}
               </time>
             </div>
@@ -147,7 +149,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
               rel="noopener noreferrer"
               className="block group-hover:text-accent transition-colors"
             >
-              <h2 className="text-xl md:text-2xl font-semibold leading-snug mb-2">
+              <h2 className="text-lg sm:text-xl md:text-2xl font-semibold leading-snug mb-2 break-words [overflow-wrap:anywhere]">
                 {item.title}
               </h2>
             </a>

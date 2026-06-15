@@ -67,16 +67,16 @@ export default async function NewsPage({ searchParams }: PageProps) {
   const { items } = await getNews(currentCategory, 0, 20);
 
   return (
-    <main className="min-h-screen py-12 px-4 md:px-8 max-w-4xl mx-auto">
+    <main className="min-h-screen w-full max-w-4xl mx-auto px-3 py-8 sm:px-4 sm:py-10 md:px-8 md:py-12 overflow-x-hidden">
       <div className="flex justify-end mb-4">
         <ThemeToggle />
       </div>
 
-      <header className="mb-12 text-center">
-        <h1 className="text-4xl md:text-6xl font-bold mb-4 text-gradient tracking-tight">
+      <header className="mb-8 text-center sm:mb-12">
+        <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold mb-3 sm:mb-4 text-gradient tracking-tight break-words">
           NexusFeed
         </h1>
-        <p className="text-foreground/60 text-lg">
+        <p className="text-foreground/60 text-sm sm:text-base md:text-lg">
           複数のソースから統合された最新のニュース
         </p>
       </header>
@@ -107,4 +107,3 @@ export default async function NewsPage({ searchParams }: PageProps) {
     </main>
   );
 }
-
