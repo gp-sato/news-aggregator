@@ -182,7 +182,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
         </button>
 
         {isSearchOpen && (
-          <section className="glass w-[min(calc(100vw-2rem),24rem)] rounded-2xl p-5 sm:p-6 animate-in fade-in slide-in-from-right-4 duration-300">
+          <section className="bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border border-card-border shadow-2xl w-[min(calc(100vw-2rem),24rem)] rounded-2xl p-5 sm:p-6 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="mb-5 flex items-center justify-between gap-4">
               <h2 className="text-lg font-semibold">ニュースを検索</h2>
               <button
