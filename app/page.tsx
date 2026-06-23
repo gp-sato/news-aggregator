@@ -2,7 +2,7 @@ import { Metadata } from 'next';
 import Link from 'next/link';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { getNewsFromDb } from '@/lib/news';
-import { NewsList } from '@/components/news-list';
+import { NewsList, type NewsItem } from '@/components/news-list';
 import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
@@ -99,7 +99,7 @@ export default async function NewsPage({ searchParams }: PageProps) {
         })}
       </div>
 
-      <NewsList key={currentCategory} initialItems={items as any} currentCategory={currentCategory} />
+      <NewsList key={currentCategory} initialItems={items as NewsItem[]} currentCategory={currentCategory} />
 
       <footer className="mt-16 text-center text-foreground/30 text-sm border-t border-card-border pt-8">
         &copy; {new Date().getFullYear()} NexusFeed. Crafted with precision.

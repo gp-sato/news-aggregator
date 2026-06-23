@@ -103,13 +103,23 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
 export async function getNewsFromDb(params: {
   category?: string
   source?: string
+  query?: string
   skip?: number
   take?: number
 }) {
-  const { category, source, skip, take } = params
+  const { category, source, query, skip, take } = params
+  const trimmedQuery = query?.trim()
 
   const whereCondition = {
     ...(source && source !== 'all' ? { sourceId: source } : {}),
+    ...(trimmedQuery
+      ? {
+          title: {
+            contains: trimmedQuery,
+            mode: 'insensitive' as const,
+          },
+        }
+      : {}),
     ...(category && category !== 'all'
       ? {
           categories: {
@@ -254,4 +264,3 @@ export async function syncNews() {
 
   return result
 }
-

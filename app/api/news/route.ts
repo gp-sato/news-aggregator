@@ -5,6 +5,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const category = searchParams.get('category') || 'all';
   const source = searchParams.get('source') || 'all';
+  const query = searchParams.get('q') || '';
   const page = parseInt(searchParams.get('page') || '1', 10);
   const limit = parseInt(searchParams.get('limit') || '20', 10);
 
@@ -18,6 +19,7 @@ export async function GET(request: NextRequest) {
     const items = await getNewsFromDb({
       category,
       source: source !== 'all' ? source : undefined,
+      query,
       skip,
       take: validatedLimit,
     });

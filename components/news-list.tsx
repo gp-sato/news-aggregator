@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import useSWRInfinite from 'swr/infinite';
 
-interface NewsItem {
+export interface NewsItem {
   id: string;
   guid: string | null;
   title: string;
@@ -60,23 +60,44 @@ function formatDate(dateInput: string | null | undefined) {
 }
 
 export function NewsList({ initialItems, currentCategory }: NewsListProps) {
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const trimmedSearchQuery = searchQuery.trim();
+
   const getKey = (pageIndex: number, previousPageData: NewsItem[]) => {
     // 最後に到達したか、前のデータが空の場合は null を返してフェッチを停止する
     if (previousPageData && !previousPageData.length) return null;
-    return `/api/news?category=${currentCategory}&page=${pageIndex + 1}&limit=20`;
+    const params = new URLSearchParams({
+      category: currentCategory,
+      page: String(pageIndex + 1),
+      limit: '20',
+    });
+
+    if (trimmedSearchQuery) {
+      params.set('q', trimmedSearchQuery);
+    }
+
+    return `/api/news?${params.toString()}`;
   };
 
-  const { data, size, setSize, isValidating, error } = useSWRInfinite<NewsItem[]>(
+  const { data, size, setSize, error } = useSWRInfinite<NewsItem[]>(
     getKey,
     fetcher,
     {
-      fallbackData: [initialItems],
+      fallbackData: trimmedSearchQuery ? undefined : [initialItems],
       revalidateFirstPage: false,
       persistSize: false,
     }
   );
 
   const newsItems = data ? data.flat() : [];
+  const isSearching = trimmedSearchQuery.length > 0;
+  const resultLabel = useMemo(() => {
+    if (!isSearching) return null;
+    return `${trimmedSearchQuery} の検索結果`;
+  }, [isSearching, trimmedSearchQuery]);
   const isLoadingInitialData = !data && !error;
   const isLoadingMore =
     isLoadingInitialData ||
@@ -111,8 +132,149 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
     };
   }, [isLoadingMore, isReachingEnd, setSize]);
 
+  useEffect(() => {
+    setSize(1);
+  }, [currentCategory, trimmedSearchQuery, setSize]);
+
+  useEffect(() => {
+    if (isSearchOpen) {
+      searchInputRef.current?.focus();
+    }
+  }, [isSearchOpen]);
+
+  const handleSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSearchQuery(searchInput);
+  };
+
+  const handleSearchInputChange = (value: string) => {
+    setSearchInput(value);
+    setSearchQuery(value);
+  };
+
+  const clearSearch = () => {
+    setSearchInput('');
+    setSearchQuery('');
+    searchInputRef.current?.focus();
+  };
+
   return (
     <div className="space-y-6">
+      <div className="fixed right-4 top-32 sm:right-6 sm:top-40 z-40 flex flex-col items-end gap-4">
+        <button
+          type="button"
+          onClick={() => setIsSearchOpen((isOpen) => !isOpen)}
+          className="h-14 w-14 rounded-full bg-accent text-white shadow-lg shadow-accent/30 flex items-center justify-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-accent/40 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:ring-offset-2 focus:ring-offset-background"
+          aria-label={isSearchOpen ? '検索ウィンドウを閉じる' : '検索ウィンドウを開く'}
+          aria-expanded={isSearchOpen}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-7 w-7"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.197 5.197a7.5 7.5 0 0 0 10.606 10.606Z" />
+          </svg>
+        </button>
+
+        {isSearchOpen && (
+          <section className="glass w-[min(calc(100vw-2rem),24rem)] rounded-2xl p-5 sm:p-6 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <h2 className="text-lg font-semibold">ニュースを検索</h2>
+              <button
+                type="button"
+                onClick={() => setIsSearchOpen(false)}
+                className="h-10 w-10 rounded-full flex items-center justify-center text-foreground/50 transition-colors hover:bg-foreground/5 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50"
+                aria-label="検索ウィンドウを閉じる"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleSearchSubmit} className="relative">
+              <input
+                ref={searchInputRef}
+                type="search"
+                value={searchInput}
+                onChange={(event) => handleSearchInputChange(event.target.value)}
+                placeholder="キーワードを入力"
+                className="w-full rounded-xl border border-card-border bg-background/70 px-4 py-3 pr-20 text-sm outline-none transition-colors placeholder:text-foreground/35 focus:border-accent focus:ring-2 focus:ring-accent/20"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={clearSearch}
+                  className="absolute right-11 top-1/2 h-8 w-8 -translate-y-1/2 rounded-full flex items-center justify-center text-foreground/40 transition-colors hover:bg-foreground/5 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50"
+                  aria-label="検索キーワードをクリア"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+              <button
+                type="submit"
+                className="absolute right-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full flex items-center justify-center text-foreground/50 transition-colors hover:bg-accent/10 hover:text-accent focus:outline-none focus:ring-2 focus:ring-accent/50"
+                aria-label="検索する"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.197 5.197a7.5 7.5 0 0 0 10.606 10.606Z" />
+                </svg>
+              </button>
+            </form>
+
+            {resultLabel && (
+              <p className="mt-4 border-t border-card-border pt-4 text-sm text-foreground/50">
+                {resultLabel}
+              </p>
+            )}
+          </section>
+        )}
+      </div>
+
+      {resultLabel && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-card-border bg-card-bg px-4 py-3 text-sm text-foreground/60">
+          <span className="min-w-0 truncate">{resultLabel}</span>
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="shrink-0 text-accent transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-md px-2 py-1"
+          >
+            解除
+          </button>
+        </div>
+      )}
+
       {/* ニュース項目一覧 */}
       <div className="space-y-6">
         {newsItems.map((item) => (
@@ -226,7 +388,9 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
         {!isLoadingMore && isEmpty && (
           <div className="glass rounded-2xl p-12 text-center w-full">
-            <p className="text-foreground/50 mb-2">表示するニュースがありません。</p>
+            <p className="text-foreground/50 mb-2">
+              {isSearching ? '一致するニュースがありません。' : '表示するニュースがありません。'}
+            </p>
           </div>
         )}
       </div>
