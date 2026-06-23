@@ -81,7 +81,7 @@ export default async function NewsPage({ searchParams }: PageProps) {
         </p>
       </header>
 
-      <div className='flex space-x-2 border-b border-card-border mb-6 overflow-x-auto overflow-y-hidden'>
+      <div className='flex space-x-2 border-b border-card-border mb-6 overflow-x-auto overflow-y-hidden no-scrollbar'>
         {tabs.map((tab) => {
           const isActive = currentCategory === tab.id;
           return (
