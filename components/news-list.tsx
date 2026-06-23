@@ -217,7 +217,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
               value={searchInput}
               onChange={(event) => handleSearchInputChange(event.target.value)}
               placeholder="キーワードを入力して検索"
-              className="w-full rounded-xl border border-card-border bg-background/70 px-4 py-3 pr-20 text-sm outline-none transition-colors placeholder:text-foreground/35 focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full rounded-xl border border-card-border bg-background/70 px-4 py-3 pr-20 text-base outline-none transition-colors placeholder:text-foreground/35 focus:border-accent focus:ring-2 focus:ring-accent/20"
             />
             {searchInput && (
               <button
