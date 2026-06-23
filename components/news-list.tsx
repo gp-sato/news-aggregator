@@ -142,6 +142,22 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
     }
   }, [isSearchOpen]);
 
+  // 検索入力のデバウンス処理（300ms）
+  useEffect(() => {
+    if (searchInput.trim() === '') {
+      setSearchQuery('');
+      return;
+    }
+
+    const handler = setTimeout(() => {
+      setSearchQuery(searchInput);
+    }, 300);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [searchInput]);
+
   const handleSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSearchQuery(searchInput);
@@ -149,7 +165,6 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
   const handleSearchInputChange = (value: string) => {
     setSearchInput(value);
-    setSearchQuery(value);
   };
 
   const clearSearch = () => {
