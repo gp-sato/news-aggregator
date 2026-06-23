@@ -160,40 +160,60 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
   return (
     <div className="space-y-6">
-      <div className="fixed right-4 top-32 sm:right-6 sm:top-40 z-40 flex flex-col items-end gap-4">
+      {/* ニュースリストのコントロールヘッダー部 */}
+      <div className="flex items-center justify-between border-b border-card-border pb-3">
+        <h2 className="text-sm font-semibold tracking-wider uppercase text-foreground/45">
+          {isSearching ? '検索結果' : '最新の配信'}
+        </h2>
+        
         <button
           type="button"
           onClick={() => setIsSearchOpen((isOpen) => !isOpen)}
-          className="h-14 w-14 rounded-full bg-accent text-white shadow-lg shadow-accent/30 flex items-center justify-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-accent/40 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:ring-offset-2 focus:ring-offset-background"
-          aria-label={isSearchOpen ? '検索ウィンドウを閉じる' : '検索ウィンドウを開く'}
+          className={`h-9 px-3.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all duration-300 ${
+            isSearchOpen 
+              ? 'bg-accent/15 border-accent/35 text-accent shadow-sm shadow-accent/5' 
+              : 'bg-card-bg border-card-border text-foreground/60 hover:text-foreground hover:bg-foreground/5'
+          }`}
+          aria-label={isSearchOpen ? '検索窓を閉じる' : '検索窓を開く'}
           aria-expanded={isSearchOpen}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            className="h-7 w-7"
+            className="h-4 w-4"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
-            strokeWidth={2}
+            strokeWidth={2.5}
             aria-hidden="true"
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.197 5.197a7.5 7.5 0 0 0 10.606 10.606Z" />
           </svg>
+          {isSearchOpen ? '検索を閉じる' : 'ニュースを検索'}
         </button>
+      </div>
 
-        {isSearchOpen && (
-          <section className="bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border border-card-border shadow-2xl w-[min(calc(100vw-2rem),24rem)] rounded-2xl p-5 sm:p-6 animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="mb-5 flex items-center justify-between gap-4">
-              <h2 className="text-lg font-semibold">ニュースを検索</h2>
+      {/* インライン検索入力欄 */}
+      {isSearchOpen && (
+        <section className="bg-white/95 dark:bg-neutral-900/95 border border-card-border rounded-2xl p-4 shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
+          <form onSubmit={handleSearchSubmit} className="relative">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchInput}
+              onChange={(event) => handleSearchInputChange(event.target.value)}
+              placeholder="キーワードを入力して検索"
+              className="w-full rounded-xl border border-card-border bg-background/70 px-4 py-3 pr-20 text-sm outline-none transition-colors placeholder:text-foreground/35 focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+            {searchInput && (
               <button
                 type="button"
-                onClick={() => setIsSearchOpen(false)}
-                className="h-10 w-10 rounded-full flex items-center justify-center text-foreground/50 transition-colors hover:bg-foreground/5 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50"
-                aria-label="検索ウィンドウを閉じる"
+                onClick={clearSearch}
+                className="absolute right-11 top-1/2 h-8 w-8 -translate-y-1/2 rounded-full flex items-center justify-center text-foreground/40 transition-colors hover:bg-foreground/5 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50"
+                aria-label="検索キーワードをクリア"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
+                  className="h-4 w-4"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -203,64 +223,27 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
                 </svg>
               </button>
-            </div>
-
-            <form onSubmit={handleSearchSubmit} className="relative">
-              <input
-                ref={searchInputRef}
-                type="search"
-                value={searchInput}
-                onChange={(event) => handleSearchInputChange(event.target.value)}
-                placeholder="キーワードを入力"
-                className="w-full rounded-xl border border-card-border bg-background/70 px-4 py-3 pr-20 text-sm outline-none transition-colors placeholder:text-foreground/35 focus:border-accent focus:ring-2 focus:ring-accent/20"
-              />
-              {searchInput && (
-                <button
-                  type="button"
-                  onClick={clearSearch}
-                  className="absolute right-11 top-1/2 h-8 w-8 -translate-y-1/2 rounded-full flex items-center justify-center text-foreground/40 transition-colors hover:bg-foreground/5 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50"
-                  aria-label="検索キーワードをクリア"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    aria-hidden="true"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              )}
-              <button
-                type="submit"
-                className="absolute right-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full flex items-center justify-center text-foreground/50 transition-colors hover:bg-accent/10 hover:text-accent focus:outline-none focus:ring-2 focus:ring-accent/50"
-                aria-label="検索する"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  aria-hidden="true"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.197 5.197a7.5 7.5 0 0 0 10.606 10.606Z" />
-                </svg>
-              </button>
-            </form>
-
-            {resultLabel && (
-              <p className="mt-4 border-t border-card-border pt-4 text-sm text-foreground/50">
-                {resultLabel}
-              </p>
             )}
-          </section>
-        )}
-      </div>
+            <button
+              type="submit"
+              className="absolute right-2 top-1/2 h-9 w-9 -translate-y-1/2 rounded-full flex items-center justify-center text-foreground/50 transition-colors hover:bg-accent/10 hover:text-accent focus:outline-none focus:ring-2 focus:ring-accent/50"
+              aria-label="検索する"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.197 5.197a7.5 7.5 0 0 0 10.606 10.606Z" />
+              </svg>
+            </button>
+          </form>
+        </section>
+      )}
 
       {resultLabel && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-card-border bg-card-bg px-4 py-3 text-sm text-foreground/60">
