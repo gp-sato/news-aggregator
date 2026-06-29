@@ -66,7 +66,47 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const trimmedSearchQuery = searchQuery.trim();
 
+  // State to manage bookmarks and mounted status
+  const [mounted, setMounted] = useState(false);
+  const [bookmarks, setBookmarks] = useState<NewsItem[]>([]);
+
+  // Load bookmarks on mount
+  useEffect(() => {
+    const handle = requestAnimationFrame(() => {
+      setMounted(true);
+      try {
+        const saved = localStorage.getItem('nexusfeed_bookmarks');
+        if (saved) {
+          setBookmarks(JSON.parse(saved));
+        }
+      } catch (e) {
+        console.error('Failed to load bookmarks from localStorage:', e);
+      }
+    });
+    return () => cancelAnimationFrame(handle);
+  }, []);
+
+  // Toggle bookmark status
+  const toggleBookmark = (item: NewsItem) => {
+    try {
+      let updated: NewsItem[];
+      const isSaved = bookmarks.some((b) => b.id === item.id);
+      if (isSaved) {
+        updated = bookmarks.filter((b) => b.id !== item.id);
+      } else {
+        updated = [...bookmarks, item];
+      }
+      setBookmarks(updated);
+      localStorage.setItem('nexusfeed_bookmarks', JSON.stringify(updated));
+    } catch (e) {
+      console.error('Failed to update bookmarks in localStorage:', e);
+    }
+  };
+
   const getKey = (pageIndex: number, previousPageData: NewsItem[]) => {
+    // If showing bookmarks, do not fetch from server API
+    if (currentCategory === 'bookmarks') return null;
+
     // 最後に到達したか、前のデータが空の場合は null を返してフェッチを停止する
     if (previousPageData && !previousPageData.length) return null;
     const params = new URLSearchParams({
@@ -86,27 +126,66 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
     getKey,
     fetcher,
     {
-      fallbackData: trimmedSearchQuery ? undefined : [initialItems],
+      fallbackData: (trimmedSearchQuery || currentCategory === 'bookmarks') ? undefined : [initialItems],
       revalidateFirstPage: false,
       persistSize: false,
     }
   );
 
-  const newsItems = data ? data.flat() : [];
+  // Filter bookmarked items locally by the search query
+  const filteredBookmarks = useMemo(() => {
+    if (!trimmedSearchQuery) return bookmarks;
+    const q = trimmedSearchQuery.toLowerCase();
+    return bookmarks.filter(
+      (b) =>
+        b.title.toLowerCase().includes(q) ||
+        (b.summary && b.summary.toLowerCase().includes(q)) ||
+        (b.contentSnippet && b.contentSnippet.toLowerCase().includes(q)) ||
+        b.source.name.toLowerCase().includes(q)
+    );
+  }, [bookmarks, trimmedSearchQuery]);
+
+  // Determine items to render and filter out duplicates by ID
+  const newsItems = useMemo(() => {
+    let items: NewsItem[];
+    if (currentCategory === 'bookmarks') {
+      items = mounted ? filteredBookmarks : [];
+    } else {
+      items = data ? data.flat() : [];
+    }
+
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      if (!item || !item.id) return false;
+      if (seen.has(item.id)) {
+        return false;
+      }
+      seen.add(item.id);
+      return true;
+    });
+  }, [currentCategory, mounted, filteredBookmarks, data]);
+
   const isSearching = trimmedSearchQuery.length > 0;
   const resultLabel = useMemo(() => {
     if (!isSearching) return null;
     return `${trimmedSearchQuery} の検索結果`;
   }, [isSearching, trimmedSearchQuery]);
-  const isLoadingInitialData = !data && !error;
+  const isLoadingInitialData = currentCategory === 'bookmarks' ? false : (!data && !error);
   const isLoadingMore =
-    isLoadingInitialData ||
-    (size > 0 && data && typeof data[size - 1] === 'undefined');
+    currentCategory === 'bookmarks'
+      ? false
+      : isLoadingInitialData || (size > 0 && data && typeof data[size - 1] === 'undefined');
   
   // 取得された最後のページのアイテム数が20未満の場合、または空の場合に「最後まで読み込み完了」とする
-  const isEmpty = data?.[0]?.length === 0;
+  const isEmpty =
+    currentCategory === 'bookmarks'
+      ? mounted && newsItems.length === 0
+      : data?.[0]?.length === 0;
+
   const isReachingEnd =
-    isEmpty || (data && data[data.length - 1]?.length < 20);
+    currentCategory === 'bookmarks'
+      ? true
+      : isEmpty || (data && data[data.length - 1]?.length < 20);
 
   const observerRef = useRef<HTMLDivElement>(null);
 
@@ -144,14 +223,10 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
   // 検索入力のデバウンス処理（300ms）
   useEffect(() => {
-    if (searchInput.trim() === '') {
-      setSearchQuery('');
-      return;
-    }
-
+    const delay = searchInput.trim() === '' ? 0 : 300;
     const handler = setTimeout(() => {
       setSearchQuery(searchInput);
-    }, 300);
+    }, delay);
 
     return () => {
       clearTimeout(handler);
@@ -275,60 +350,91 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
       {/* ニュース項目一覧 */}
       <div className="space-y-6">
-        {newsItems.map((item) => (
-          <article
-            key={item.link}
-            className="glass glass-hover rounded-xl sm:rounded-2xl p-4 sm:p-6 transition-all duration-300 group animate-in fade-in slide-in-from-bottom-4 duration-500"
-          >
-            <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-4 w-full min-w-0">
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
-                  {item.source.name}
-                </span>
-                {item.categories && item.categories.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {item.categories.map((c) => (
-                      <span
-                        key={c.categoryId}
-                        className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
-                      >
-                        {c.category.label}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <time className="text-xs sm:text-sm text-foreground/40 font-medium sm:ml-auto">
-                {formatDate(item.pubDate)}
-              </time>
-            </div>
-
-            <a
-              href={item.link}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block group-hover:text-accent transition-colors"
+        {newsItems.map((item) => {
+          const isBookmarked = bookmarks.some((b) => b.id === item.id);
+          return (
+            <article
+              key={item.id}
+              className="glass glass-hover rounded-xl sm:rounded-2xl p-4 sm:p-6 transition-all duration-300 group animate-in fade-in slide-in-from-bottom-4 duration-500"
             >
-              <h2 className="text-lg sm:text-xl md:text-2xl font-semibold leading-snug mb-2 break-words [overflow-wrap:anywhere]">
-                {item.title}
-              </h2>
-            </a>
+              <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-4 w-full min-w-0">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                  <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
+                    {item.source.name}
+                  </span>
+                  {item.categories && item.categories.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {item.categories.map((c) => (
+                        <span
+                          key={c.categoryId}
+                          className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
+                        >
+                          {c.category.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 sm:ml-auto shrink-0">
+                  <time className="text-xs sm:text-sm text-foreground/40 font-medium">
+                    {formatDate(item.pubDate)}
+                  </time>
+                  <button
+                    type="button"
+                    onClick={() => toggleBookmark(item)}
+                    className={`p-1.5 rounded-lg border transition-all duration-300 ${
+                      isBookmarked
+                        ? 'bg-accent/15 border-accent/30 text-accent hover:bg-accent/25'
+                        : 'bg-card-bg border-card-border text-foreground/40 hover:text-accent hover:border-accent/40 hover:bg-accent/5'
+                    }`}
+                    aria-label={isBookmarked ? 'ブックマークを解除' : '後で読む'}
+                    title={isBookmarked ? 'ブックマークを解除' : '後で読む'}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill={isBookmarked ? 'currentColor' : 'none'}
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      className="h-[18px] w-[18px] transition-transform duration-200 active:scale-75"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </div>
 
-            <div className="flex justify-end">
               <a
                 href={item.link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm text-accent opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 font-medium"
+                className="block group-hover:text-accent transition-colors"
               >
-                続きを読む
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                </svg>
+                <h2 className="text-lg sm:text-xl md:text-2xl font-semibold leading-snug mb-2 break-words [overflow-wrap:anywhere]">
+                  {item.title}
+                </h2>
               </a>
-            </div>
-          </article>
-        ))}
+
+              <div className="flex justify-end">
+                <a
+                  href={item.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-accent opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 font-medium"
+                >
+                  続きを読む
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                  </svg>
+                </a>
+              </div>
+            </article>
+          );
+        })}
       </div>
 
       {/* スクロール監視エリア ＆ ローディング・エラー・完了表示 */}
@@ -385,10 +491,37 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
         )}
 
         {!isLoadingMore && isEmpty && (
-          <div className="glass rounded-2xl p-12 text-center w-full">
-            <p className="text-foreground/50 mb-2">
-              {isSearching ? '一致するニュースがありません。' : '表示するニュースがありません。'}
-            </p>
+          <div className="glass rounded-2xl p-12 text-center w-full flex flex-col items-center justify-center space-y-4">
+            {currentCategory === 'bookmarks' && !isSearching ? (
+              <>
+                <div className="p-4 bg-accent/10 text-accent rounded-full border border-accent/25 animate-bounce">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    className="h-10 w-10"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z"
+                    />
+                  </svg>
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-lg font-semibold text-foreground/80">保存された記事はありません</h3>
+                  <p className="text-foreground/50 text-sm max-w-sm mx-auto">
+                    ニュースカードのブックマークボタンを押すことで、後で読みたい記事をここに保存できます。
+                  </p>
+                </div>
+              </>
+            ) : (
+              <p className="text-foreground/50 mb-2">
+                {isSearching ? '一致するニュースがありません。' : '表示するニュースがありません。'}
+              </p>
+            )}
           </div>
         )}
       </div>

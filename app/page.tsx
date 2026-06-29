@@ -13,6 +13,9 @@ export const metadata: Metadata = {
 };
 
 async function getNews(category?: string, skip?: number, take?: number) {
+  if (category === 'bookmarks') {
+    return { items: [] };
+  }
   try {
     const items = await getNewsFromDb({
       category: category !== 'all' ? category : undefined,
@@ -61,6 +64,7 @@ export default async function NewsPage({ searchParams }: PageProps) {
 
   const tabs = [
     { id: 'all', label: 'すべて' },
+    { id: 'bookmarks', label: '後で読む' },
     ...dbCategories.map((c) => ({ id: c.id, label: c.label })),
   ];
 
