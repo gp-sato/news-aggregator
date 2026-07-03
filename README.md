@@ -51,6 +51,87 @@ npm run dev
 
 ---
 
+## 💻 ローカル開発環境のセットアップ (Supabase Local + Prisma)
+
+ローカル環境では、Docker と Supabase CLI を用いて PostgreSQL データベースを立ち上げ、Prisma でスキーマ・マイグレーション・シードの管理を行います。
+
+### ディレクトリ構成
+```text
+news-aggregator/
+├── app/
+├── components/
+├── prisma/
+│   ├── migrations/
+│   ├── schema.prisma
+│   └── seed.ts
+├── supabase/
+│   └── config.toml
+├── package.json
+├── prisma.config.ts
+└── ...
+```
+
+この構成では、**Prisma を唯一の真実（Single Source of Truth）**としてデータベーススキーマを一元管理し、**Supabase CLI はローカル実行環境（インフラ）の起動管理のみ**を担います。
+
+#### メリット
+1. **リポジトリの統合**: コード、DB定義、マイグレーション履歴を同じコミットで管理できます。
+2. **シンプルなスキーマ管理**: スキーマ変更は `schema.prisma` からマイグレーションファイルを生成し、Supabase に適用する単一の流れになります。
+3. **役割の明確化**: Supabase CLI はコンテナや各種インフラの設定（`supabase/config.toml`）のみを担当します。
+
+---
+
+### セットアップ手順
+
+#### 1. 動作要件
+* [Docker Desktop](https://www.docker.com/products/docker-desktop/)（または同等の Docker 仮想環境）が起動していること。
+* [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started) がインストールされていること。
+
+#### 2. ローカル Supabase の起動
+プロジェクトルートで以下を実行し、ローカルコンテナを立ち上げます。
+```bash
+supabase start
+```
+起動すると、ローカルのデータベース URL や Supabase Studio の URL（デフォルトは `http://127.0.0.1:54323`）などがコンソールに出力されます。
+
+#### 3. 環境変数の設定
+`.env` ファイルを開き、データベース接続文字列をローカル環境用に書き換えます（デフォルトで記述済みの場合はそのままで問題ありません）。
+```ini
+# --- ローカル開発環境用 (Supabase Local) ---
+DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+DIRECT_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+```
+
+#### 4. マイグレーションの適用
+既存のマイグレーションファイルをローカルデータベースに適用してテーブルを作成します。
+```bash
+npx prisma migrate dev
+```
+
+#### 5. シードデータの投入
+Prisma v7 の仕様に従い、手動でシードスクリプトを実行してカテゴリやニュースソースをデータベースに登録します。
+```bash
+npx prisma db seed
+```
+
+---
+
+### ローカル運用の基本コマンド
+
+| 操作内容 | コマンド | 概要 |
+| :--- | :--- | :--- |
+| **環境の起動** | `supabase start` | ローカルの Supabase コンテナ群を起動します。 |
+| **スキーマ変更** | `npx prisma migrate dev` | `schema.prisma` の変更を検知してマイグレーションを作成・適用します。 |
+| **シード実行** | `npx prisma db seed` | `prisma/seed.ts` を実行して初期データを投入します。 |
+| **DBリセット** | `npx prisma migrate reset` | データベースを完全に初期化し、マイグレーションとシードを再実行します。 |
+
+> [!NOTE]
+> スキーマ管理を Prisma に一任しているため、`supabase db reset` コマンドは原則として使用せず、Prisma の `npx prisma migrate reset` を使用します。
+
+### 注意事項
+* **直接編集の禁止**: ローカル・本番を問わず、Supabase Studio の Table Editor などから直接テーブル構造を編集しないでください。スキーマの変更は常に `schema.prisma` を経由させてください。
+
+---
+
 ## 🚀 使用方法
 
 ### 📰 ニュースを確認する
