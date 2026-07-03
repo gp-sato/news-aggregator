@@ -89,7 +89,7 @@ news-aggregator/
 #### 2. ローカル Supabase の起動
 プロジェクトルートで以下を実行し、ローカルコンテナを立ち上げます。
 ```bash
-supabase start
+npx supabase start
 ```
 起動すると、ローカルのデータベース URL や Supabase Studio の URL（デフォルトは `http://127.0.0.1:54323`）などがコンソールに出力されます。
 
@@ -119,13 +119,13 @@ npx prisma db seed
 
 | 操作内容 | コマンド | 概要 |
 | :--- | :--- | :--- |
-| **環境の起動** | `supabase start` | ローカルの Supabase コンテナ群を起動します。 |
+| **環境の起動** | `npx supabase start` | ローカルの Supabase コンテナ群を起動します。 |
 | **スキーマ変更** | `npx prisma migrate dev` | `schema.prisma` の変更を検知してマイグレーションを作成・適用します。 |
 | **シード実行** | `npx prisma db seed` | `prisma/seed.ts` を実行して初期データを投入します。 |
-| **DBリセット** | `npx prisma migrate reset` | データベースを完全に初期化し、マイグレーションとシードを再実行します。 |
+| **DBリセット** | `npx prisma migrate reset` | データベースを完全に初期化し、マイグレーションを再適用します。（※シードは手動で再実行が必要です） |
 
 > [!NOTE]
-> スキーマ管理を Prisma に一任しているため、`supabase db reset` コマンドは原則として使用せず、Prisma の `npx prisma migrate reset` を使用します。
+> スキーマ管理を Prisma に一任しているため、`npx supabase db reset` コマンドは原則として使用せず、Prisma の `npx prisma migrate reset` を使用します。
 
 ### 注意事項
 * **直接編集の禁止**: ローカル・本番を問わず、Supabase Studio の Table Editor などから直接テーブル構造を編集しないでください。スキーマの変更は常に `schema.prisma` を経由させてください。
