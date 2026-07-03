@@ -33,8 +33,12 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
 
   const feedPromises = dbSources.map(async (source) => {
     try {
-      // 外部サーバーへの負荷軽減とアクセスの高速化のため、Next.jsのData Cache（10分間再検証）を適用してXMLを取得します
-      const res = await fetch(source.url, { next: { revalidate: 60 * 10 } })
+      // 外部サーバーへの負荷軽減とアクセスの高速化のため、本番環境ではNext.jsのData Cache（10分間再検証）を適用してXMLを取得します。
+      // 開発環境では常に最新データを取得するため、キャッシュを無効にします。
+      const fetchOptions = process.env.NODE_ENV === 'production'
+        ? { next: { revalidate: 60 * 10 } }
+        : { cache: 'no-store' as const }
+      const res = await fetch(source.url, fetchOptions)
       if (!res.ok) {
         throw new Error(`Failed to fetch XML. Status: ${res.status}`)
       }
