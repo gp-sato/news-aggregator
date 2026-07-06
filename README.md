@@ -55,7 +55,13 @@ npx prisma migrate dev
 npx prisma generate
 ```
 
-#### 5. 開発サーバーの起動
+#### 5. シードデータの投入
+Prisma の仕様に従い、シードスクリプトを実行してカテゴリやニュースソースをデータベースに登録します。
+```bash
+npx prisma db seed
+```
+
+#### 6. 開発サーバーの起動
 ```bash
 npm run dev
 ```
@@ -175,7 +181,7 @@ news-aggregator/
 
 ### 推奨設定手順
 1. Supabase ダッシュボードの **Table Editor** に移動します。
-2. `NewsItem` テーブルを選択し、画面右上の **RLS (Row Level Security)** を **Enable（有効）** にします。
+2. 各テーブルを選択し、画面右上の **RLS (Row Level Security)** を **Enable（有効）** にします。
 3. **ポリシー（Policies）は作成しないでください。**
    * ポリシーを作成しないことで、外部の API 経由からの読み書きがすべて遮断されます。
    * アプリケーション（Prisma）からは直接接続しているため、ポリシーが空の状態でも問題なく正常に動作します。
