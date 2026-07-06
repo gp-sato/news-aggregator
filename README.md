@@ -68,11 +68,13 @@ npm run dev
 Docker と Supabase CLI を用いてローカルに PostgreSQL データベースを立ち上げ、開発を行う方法です。オフライン環境でも動作し、他の開発メンバーと同一のデータベース環境を容易に構築できます。
 
 > [!NOTE]
-> スキーマ管理を Prisma に一任しているため、`npx supabase db reset` コマンドは原則として使用せず、Prisma の `npx prisma migrate reset` を使用します。
+> スキーマ管理を Prisma に一任しているため、`supabase db reset` コマンドは原則として使用せず、Prisma の `npx prisma migrate reset` を使用します。
+
+> [!TIP]
+> Supabase CLI はプロジェクトの devDependency としてインストールされるため、グローバルインストールは不要です。`npm install` を実行するだけで利用可能になります。
 
 #### 1. 動作要件
 * [Docker Desktop](https://www.docker.com/products/docker-desktop/)（または同等の Docker 仮想環境）が起動していること。
-* [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started) がインストールされていること。
 
 #### 2. パッケージのインストール
 プロジェクトのルートディレクトリで、必要なパッケージをインストールします。
@@ -90,7 +92,7 @@ npm install
 #### 4. ローカル Supabase の起動
 プロジェクトルートで以下を実行し、ローカルコンテナを立ち上げます。
 ```bash
-npx supabase start
+npm run db:start
 ```
 起動すると、ローカルのデータベース URL や Supabase Studio の URL（デフォルトは `http://127.0.0.1:54323`）などがコンソールに出力されます。
 
@@ -120,7 +122,7 @@ npm run dev
 
 ## 💻 ローカル開発環境の構成と運用
 
-ローカル環境では、Docker と Supabase CLI を用いて PostgreSQL データベースを立ち上げ、Prisma でスキーマ・マイグレーション・シードの管理を行います。
+ローカル環境では、Docker と Supabase CLI（プロジェクトの devDependency として管理）を用いて PostgreSQL データベースを立ち上げ、Prisma でスキーマ・マイグレーション・シードの管理を行います。
 
 ### ディレクトリ構成
 ```text
@@ -142,8 +144,9 @@ news-aggregator/
 
 | 操作内容 | コマンド | 概要 |
 | :--- | :--- | :--- |
-| **環境の起動** | `npx supabase start` | ローカルの Supabase コンテナ群を起動します。 |
-| **環境の停止** | `npx supabase stop` | ローカルの Supabase コンテナ群を停止します。 |
+| **環境の起動** | `npm run db:start` | ローカルの Supabase コンテナ群を起動します。 |
+| **環境の停止** | `npm run db:stop` | ローカルの Supabase コンテナ群を停止します。 |
+| **環境の状態確認** | `npm run db:status` | ローカルの Supabase コンテナ群の状態を確認します。 |
 | **スキーマ変更** | `npx prisma migrate dev` | `schema.prisma` の変更を検知してマイグレーションを作成・適用します。 |
 | **シード実行** | `npx prisma db seed` | `prisma/seed.ts` を実行して初期データを投入します。 |
 | **DBリセット** | `npx prisma migrate reset` | データベースを完全に初期化し、マイグレーションを再適用します。（※シードは手動で再実行が必要です） |
