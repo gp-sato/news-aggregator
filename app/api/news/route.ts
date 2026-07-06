@@ -23,9 +23,14 @@ export async function GET(request: NextRequest) {
       skip,
       take: validatedLimit,
     });
+
+    const cacheControl = process.env.NODE_ENV === 'production'
+      ? 'public, s-maxage=60, stale-while-revalidate=30'
+      : 'no-store, max-age=0, must-revalidate';
+
     return NextResponse.json(items, {
       headers: {
-        'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=30',
+        'Cache-Control': cacheControl,
       },
     });
   } catch (error) {
