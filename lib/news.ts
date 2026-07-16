@@ -18,13 +18,244 @@ export interface FeedItem {
     type?: string
   }
   sourceId: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mediaThumbnail?: any
+  hatenaImageUrl?: string
+  contentEncoded?: string
+}
+
+/**
+ * ドメインまたはソースIDに基づいて、ソースがGoogle Newsかどうか判定します。
+ */
+export function isGoogleNews(link: string, sourceId: string): boolean {
+  return (
+    sourceId.startsWith('google') ||
+    link.includes('news.google.com')
+  );
+}
+
+/**
+ * 相対URLを記事のリンクを基準とした絶対URLに変換します。
+ */
+export function resolveArticleUrl(url: string, baseUrl: string): string {
+  if (!url) return '';
+  try {
+    return new URL(url, baseUrl).href;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * HTMLのメタタグから特定のプロパティ（og:imageやtwitter:image）のcontent属性の値を抽出します。
+ */
+function extractMetaTagContent(html: string, propertyOrName: string): string | null {
+  const metaRegex = /<meta\s+[^>]*>/gi;
+  let match;
+  while ((match = metaRegex.exec(html)) !== null) {
+    const metaTag = match[0];
+    const hasPropertyOrName = new RegExp(`(?:property|name)=["']${propertyOrName}["']`, 'i').test(metaTag);
+    if (hasPropertyOrName) {
+      const contentMatch = metaTag.match(/content=["']([^"']+)["']/i);
+      if (contentMatch && contentMatch[1]) {
+        return contentMatch[1];
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 優先順位に基づいてRSS項目から画像を抽出します。
+ */
+export function extractRssImage(item: FeedItem): string | null {
+  // 1. media:thumbnail
+  if (item.mediaThumbnail) {
+    let url = '';
+    if (typeof item.mediaThumbnail === 'string') {
+      url = item.mediaThumbnail;
+    } else if (item.mediaThumbnail.$ && item.mediaThumbnail.$.url) {
+      url = item.mediaThumbnail.$.url;
+    } else if (item.mediaThumbnail.url) {
+      url = item.mediaThumbnail.url;
+    } else if (Array.isArray(item.mediaThumbnail) && item.mediaThumbnail.length > 0) {
+      const first = item.mediaThumbnail[0];
+      if (typeof first === 'string') {
+        url = first;
+      } else if (first?.$?.url) {
+        url = first.$.url;
+      } else if (first?.url) {
+        url = first.url;
+      }
+    }
+    if (url) {
+      return resolveArticleUrl(url, item.link);
+    }
+  }
+
+  // 2. hatena:imageurl
+  if (item.hatenaImageUrl) {
+    return resolveArticleUrl(item.hatenaImageUrl, item.link);
+  }
+
+  // 3. enclosure (image/* only)
+  if (item.enclosure && item.enclosure.url && item.enclosure.type?.startsWith('image/')) {
+    return resolveArticleUrl(item.enclosure.url, item.link);
+  }
+
+  // 4. first image inside content:encoded
+  const contentForSearch = item.contentEncoded || item.content || '';
+  if (contentForSearch) {
+    const imgMatch = contentForSearch.match(/<img\s+[^>]*src=["']([^"']+)["']/i);
+    if (imgMatch && imgMatch[1]) {
+      return resolveArticleUrl(imgMatch[1], item.link);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 記事のURLからOGP画像（og:image / twitter:image）を取得します。
+ */
+export async function fetchOgImage(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch article page. Status: ${res.status}`);
+    }
+
+    const html = await res.text();
+    
+    let imageUrl = extractMetaTagContent(html, 'og:image');
+    if (!imageUrl) {
+      imageUrl = extractMetaTagContent(html, 'twitter:image');
+    }
+
+    if (imageUrl) {
+      return resolveArticleUrl(imageUrl, url);
+    }
+
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * データベースの画像情報とステータスを更新します。
+ */
+export async function updateImageStatus(
+  id: string,
+  imageUrl: string | null,
+  status: 'SUCCESS' | 'NOT_FOUND' | 'FAILED' | 'PROCESSING' | 'PENDING'
+) {
+  return prisma.newsItem.update({
+    where: { id },
+    data: {
+      imageUrl,
+      imageFetchStatus: status,
+    },
+  });
+}
+
+/**
+ * 並列実行数を制限しつつ非同期タスクを実行するヘルパー。
+ */
+async function runWithConcurrencyLimit<T>(
+  limit: number,
+  items: T[],
+  fn: (item: T) => Promise<void>
+) {
+  const pool = new Set<Promise<void>>();
+  for (const item of items) {
+    const promise = fn(item).then(() => {
+      pool.delete(promise);
+    });
+    pool.add(promise);
+    if (pool.size >= limit) {
+      await Promise.race(pool);
+    }
+  }
+  await Promise.all(pool);
+}
+
+/**
+ * PENDING 状態のニュース画像の OGP 取得を一括で非同期処理します（並列数5）。
+ */
+export async function processPendingNewsImages() {
+  const pendingItems = await prisma.newsItem.findMany({
+    where: {
+      imageFetchStatus: 'PENDING',
+    },
+    take: 50,
+  });
+
+  if (pendingItems.length === 0) {
+    return { processedCount: 0, successCount: 0, failedCount: 0, notFoundCount: 0 };
+  }
+
+  let successCount = 0;
+  let failedCount = 0;
+  let notFoundCount = 0;
+
+  await runWithConcurrencyLimit(5, pendingItems, async (item) => {
+    try {
+      await prisma.newsItem.update({
+        where: { id: item.id },
+        data: { imageFetchStatus: 'PROCESSING' },
+      });
+    } catch (e) {
+      console.error(`Failed to update status to PROCESSING for item ${item.id}:`, e);
+      return;
+    }
+
+    try {
+      const ogImageUrl = await fetchOgImage(item.link);
+      if (ogImageUrl) {
+        await updateImageStatus(item.id, ogImageUrl, 'SUCCESS');
+        successCount++;
+      } else {
+        await updateImageStatus(item.id, null, 'NOT_FOUND');
+        notFoundCount++;
+      }
+    } catch (error) {
+      console.error(`Failed to fetch OGP image for item ${item.id} (${item.link}):`, error);
+      await updateImageStatus(item.id, null, 'FAILED');
+      failedCount++;
+    }
+  });
+
+  return {
+    processedCount: pendingItems.length,
+    successCount,
+    failedCount,
+    notFoundCount,
+  };
 }
 
 /**
  * 外部のRSSソースから最新のニュース記事を取得します。
  */
 export async function fetchRssFeeds(): Promise<FeedItem[]> {
-  const parser = new Parser()
+  const parser = new Parser({
+    customFields: {
+      item: [
+        ['media:thumbnail', 'mediaThumbnail'],
+        ['hatena:imageurl', 'hatenaImageUrl'],
+        ['content:encoded', 'contentEncoded'],
+      ]
+    }
+  })
   
   // データベースから有効なソースを取得
   const dbSources = await prisma.source.findMany({
@@ -51,7 +282,8 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         data: { lastFetchedAt: new Date(), lastError: null },
       }).catch((err) => console.error(`Failed to update lastFetchedAt for source ${source.id}:`, err))
 
-      return feed.items.map((item) => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return feed.items.map((item: any) => ({
         guid: item.guid,
         title: item.title || '',
         link: item.link || '',
@@ -67,6 +299,9 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
           type: item.enclosure.type,
         } : undefined,
         sourceId: source.id,
+        mediaThumbnail: item.mediaThumbnail,
+        hatenaImageUrl: item.hatenaImageUrl,
+        contentEncoded: item.contentEncoded,
       }))
     } catch (error) {
       console.error(`Failed to fetch RSS from ${source.name}:`, error)
@@ -160,8 +395,21 @@ export async function getNewsFromDb(params: {
 export async function saveNewsToDb(items: FeedItem[]) {
   if (items.length === 0) return { count: 0 }
 
-  const result = await prisma.newsItem.createMany({
-    data: items.map((item) => ({
+  const data = items.map((item) => {
+    const isGoogle = isGoogleNews(item.link, item.sourceId)
+    let extractedUrl = null
+    let status: 'SUCCESS' | 'NOT_FOUND' | 'PENDING' = 'PENDING'
+
+    if (isGoogle) {
+      status = 'NOT_FOUND'
+    } else {
+      extractedUrl = extractRssImage(item)
+      if (extractedUrl) {
+        status = 'SUCCESS'
+      }
+    }
+
+    return {
       guid: item.guid,
       title: item.title,
       link: item.link,
@@ -175,7 +423,13 @@ export async function saveNewsToDb(items: FeedItem[]) {
       enclosureLength: item.enclosure?.length ? parseInt(String(item.enclosure.length)) : null,
       enclosureType: item.enclosure?.type,
       sourceId: item.sourceId,
-    })),
+      imageUrl: extractedUrl,
+      imageFetchStatus: status,
+    }
+  })
+
+  const result = await prisma.newsItem.createMany({
+    data,
     skipDuplicates: true,
   })
 

@@ -17,6 +17,8 @@ export interface NewsItem {
   enclosureUrl: string | null;
   enclosureLength: number | null;
   enclosureType: string | null;
+  imageUrl: string | null;
+  imageFetchStatus: string;
   sourceId: string;
   source: {
     id: string;
@@ -357,80 +359,123 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
               key={item.id}
               className="glass glass-hover rounded-xl sm:rounded-2xl p-4 sm:p-6 transition-all duration-300 group animate-in fade-in slide-in-from-bottom-4 duration-500"
             >
-              <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-4 w-full min-w-0">
-                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                  <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
-                    {item.source.name}
-                  </span>
-                  {item.categories && item.categories.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {item.categories.map((c) => (
-                        <span
-                          key={c.categoryId}
-                          className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
+              <div className="flex gap-4 sm:gap-6 items-start justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-4 w-full min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                      <span className="px-3 py-1 rounded-full text-xs font-semibold bg-accent/20 text-accent border border-accent/30 tracking-wider uppercase">
+                        {item.source.name}
+                      </span>
+                      {item.categories && item.categories.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {item.categories.map((c) => (
+                            <span
+                              key={c.categoryId}
+                              className="px-2.5 py-0.5 rounded-full bg-foreground/5 text-foreground/60 border border-foreground/10 text-[10px] font-medium tracking-wide"
+                            >
+                              {c.category.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 sm:ml-auto shrink-0">
+                      <time className="text-xs sm:text-sm text-foreground/40 font-medium">
+                        {formatDate(item.pubDate)}
+                      </time>
+                      <button
+                        type="button"
+                        onClick={() => toggleBookmark(item)}
+                        className={`p-1.5 rounded-lg border transition-all duration-300 ${
+                          isBookmarked
+                            ? 'bg-accent/15 border-accent/30 text-accent hover:bg-accent/25'
+                            : 'bg-card-bg border-card-border text-foreground/40 hover:text-accent hover:border-accent/40 hover:bg-accent/5'
+                        }`}
+                        aria-label={isBookmarked ? 'ブックマークを解除' : '後で読む'}
+                        title={isBookmarked ? 'ブックマークを解除' : '後で読む'}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 24 24"
+                          fill={isBookmarked ? 'currentColor' : 'none'}
+                          stroke="currentColor"
+                          strokeWidth={2}
+                          className="h-[18px] w-[18px] transition-transform duration-200 active:scale-75"
                         >
-                          {c.category.label}
-                        </span>
-                      ))}
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <a
+                    href={item.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block group-hover:text-accent transition-colors"
+                  >
+                    <h2 className="text-lg sm:text-xl md:text-2xl font-semibold leading-snug mb-2 break-words [overflow-wrap:anywhere]">
+                      {item.title}
+                    </h2>
+                  </a>
+
+                  {item.contentSnippet && (
+                    <p className="text-xs sm:text-sm text-foreground/60 line-clamp-2 mt-2 break-words [overflow-wrap:anywhere]">
+                      {item.contentSnippet}
+                    </p>
+                  )}
+
+                  <div className="flex justify-end mt-4">
+                    <a
+                      href={item.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-accent opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 font-medium"
+                    >
+                      続きを読む
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                      </svg>
+                    </a>
+                  </div>
+                </div>
+
+                {/* 右側のサムネイル画像 / プレースホルダー */}
+                <div className="w-20 h-20 sm:w-28 sm:h-28 shrink-0 rounded-xl sm:rounded-2xl overflow-hidden border border-card-border relative bg-card-bg self-start mt-1 select-none">
+                  {item.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={item.imageUrl}
+                      alt={item.title}
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                      loading="lazy"
+                    />
+                  ) : (
+                    /* プロジェクト独自のプレースホルダー画像 (CSS グラデーション + SVG) */
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-accent/5 to-accent/15 text-accent/30">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-6 w-6 sm:h-8 sm:w-8 mb-1"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.5}
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"
+                        />
+                      </svg>
+                      <span className="text-[8px] sm:text-[10px] uppercase font-bold tracking-wider opacity-70">NexusFeed</span>
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-3 sm:ml-auto shrink-0">
-                  <time className="text-xs sm:text-sm text-foreground/40 font-medium">
-                    {formatDate(item.pubDate)}
-                  </time>
-                  <button
-                    type="button"
-                    onClick={() => toggleBookmark(item)}
-                    className={`p-1.5 rounded-lg border transition-all duration-300 ${
-                      isBookmarked
-                        ? 'bg-accent/15 border-accent/30 text-accent hover:bg-accent/25'
-                        : 'bg-card-bg border-card-border text-foreground/40 hover:text-accent hover:border-accent/40 hover:bg-accent/5'
-                    }`}
-                    aria-label={isBookmarked ? 'ブックマークを解除' : '後で読む'}
-                    title={isBookmarked ? 'ブックマークを解除' : '後で読む'}
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill={isBookmarked ? 'currentColor' : 'none'}
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      className="h-[18px] w-[18px] transition-transform duration-200 active:scale-75"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z"
-                      />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              <a
-                href={item.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block group-hover:text-accent transition-colors"
-              >
-                <h2 className="text-lg sm:text-xl md:text-2xl font-semibold leading-snug mb-2 break-words [overflow-wrap:anywhere]">
-                  {item.title}
-                </h2>
-              </a>
-
-              <div className="flex justify-end">
-                <a
-                  href={item.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-accent opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 font-medium"
-                >
-                  続きを読む
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                  </svg>
-                </a>
               </div>
             </article>
           );
