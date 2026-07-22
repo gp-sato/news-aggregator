@@ -1,5 +1,7 @@
 import Parser from 'rss-parser'
 import { prisma } from './prisma'
+import { ImageFetchStatus } from '@prisma/client'
+import { enqueueImageFetch } from './queue'
 
 export interface FeedItem {
   guid?: string
@@ -157,7 +159,7 @@ export async function fetchOgImage(url: string): Promise<string | null> {
 export async function updateImageStatus(
   id: string,
   imageUrl: string | null,
-  status: 'SUCCESS' | 'NOT_FOUND' | 'FAILED' | 'PROCESSING' | 'PENDING'
+  status: ImageFetchStatus
 ) {
   return prisma.newsItem.update({
     where: { id },
@@ -168,80 +170,7 @@ export async function updateImageStatus(
   });
 }
 
-/**
- * 並列実行数を制限しつつ非同期タスクを実行するヘルパー。
- */
-async function runWithConcurrencyLimit<T>(
-  limit: number,
-  items: T[],
-  fn: (item: T) => Promise<void>
-) {
-  const pool = new Set<Promise<void>>();
-  for (const item of items) {
-    const promise = fn(item).then(() => {
-      pool.delete(promise);
-    });
-    pool.add(promise);
-    if (pool.size >= limit) {
-      await Promise.race(pool);
-    }
-  }
-  await Promise.all(pool);
-}
 
-/**
- * PENDING 状態のニュース画像の OGP 取得を一括で非同期処理します（並列数5）。
- */
-export async function processPendingNewsImages() {
-  const pendingItems = await prisma.newsItem.findMany({
-    where: {
-      imageFetchStatus: 'PENDING',
-    },
-    take: 50,
-  });
-
-  if (pendingItems.length === 0) {
-    return { processedCount: 0, successCount: 0, failedCount: 0, notFoundCount: 0 };
-  }
-
-  let successCount = 0;
-  let failedCount = 0;
-  let notFoundCount = 0;
-
-  await runWithConcurrencyLimit(5, pendingItems, async (item) => {
-    try {
-      await prisma.newsItem.update({
-        where: { id: item.id },
-        data: { imageFetchStatus: 'PROCESSING' },
-      });
-    } catch (e) {
-      console.error(`Failed to update status to PROCESSING for item ${item.id}:`, e);
-      return;
-    }
-
-    try {
-      const ogImageUrl = await fetchOgImage(item.link);
-      if (ogImageUrl) {
-        await updateImageStatus(item.id, ogImageUrl, 'SUCCESS');
-        successCount++;
-      } else {
-        await updateImageStatus(item.id, null, 'NOT_FOUND');
-        notFoundCount++;
-      }
-    } catch (error) {
-      console.error(`Failed to fetch OGP image for item ${item.id} (${item.link}):`, error);
-      await updateImageStatus(item.id, null, 'FAILED');
-      failedCount++;
-    }
-  });
-
-  return {
-    processedCount: pendingItems.length,
-    successCount,
-    failedCount,
-    notFoundCount,
-  };
-}
 
 /**
  * 外部のRSSソースから最新のニュース記事を取得します。
@@ -397,11 +326,12 @@ export async function saveNewsToDb(items: FeedItem[]) {
 
   const data = items.map((item) => {
     const isGoogle = isGoogleNews(item.link, item.sourceId)
-    let extractedUrl = null
-    let status: 'SUCCESS' | 'NOT_FOUND' | 'PENDING' = 'PENDING'
+    let extractedUrl: string | null = null
+    let status: ImageFetchStatus = 'QUEUED'
 
     if (isGoogle) {
-      status = 'NOT_FOUND'
+      extractedUrl = '/images/placeholder.png' // プロジェクト独自のプレースホルダー画像
+      status = 'SUCCESS'
     } else {
       extractedUrl = extractRssImage(item)
       if (extractedUrl) {
@@ -445,6 +375,8 @@ export async function saveNewsToDb(items: FeedItem[]) {
     select: {
       id: true,
       sourceId: true,
+      link: true,
+      imageFetchStatus: true,
     },
   })
 
@@ -474,6 +406,14 @@ export async function saveNewsToDb(items: FeedItem[]) {
       data: joinRows,
       skipDuplicates: true,
     })
+  }
+
+  // キューイング対象（imageFetchStatus が QUEUED のもの）を Vercel Queues へ送信
+  const queuedArticles = savedArticles.filter(
+    (article) => article.imageFetchStatus === 'QUEUED'
+  )
+  if (queuedArticles.length > 0) {
+    await enqueueImageFetch(queuedArticles.map((a) => ({ id: a.id, link: a.link })))
   }
 
   return { count: result.count }

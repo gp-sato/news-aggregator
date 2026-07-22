@@ -57,7 +57,7 @@ model NewsItem {
   enclosureType   String?
 
   imageUrl         String?
-  imageFetchStatus ImageFetchStatus @default(PENDING)
+  imageFetchStatus ImageFetchStatus @default(QUEUED)
 
   sourceId        String
   source          Source   @relation(fields: [sourceId], references: [id])
@@ -69,7 +69,7 @@ model NewsItem {
 }
 
 enum ImageFetchStatus {
-  PENDING
+  QUEUED
   PROCESSING
   SUCCESS
   NOT_FOUND

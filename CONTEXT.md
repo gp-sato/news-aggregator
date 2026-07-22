@@ -35,7 +35,7 @@ Image fetching is asynchronous.
 
 RSS synchronization only creates pending work.
 
-A separate cron job performs HTML fetching.
+A queue worker triggered via Vercel Queues performs HTML fetching.
 
 ---
 
@@ -43,13 +43,14 @@ ImageFetchStatus is an enum.
 
 Possible values:
 
-* PENDING
+* QUEUED
 * PROCESSING
 * SUCCESS
 * NOT_FOUND
 * FAILED
 
 PROCESSING prevents duplicate work when multiple workers execute simultaneously.
+
 
 ---
 

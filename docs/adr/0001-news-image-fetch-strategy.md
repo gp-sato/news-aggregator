@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0002](file:///c:/Users/KazuhiroSato/agy-projects/news-aggregator/docs/adr/0002-vercel-queues-image-fetching.md)
 
 ## Context
 
