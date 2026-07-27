@@ -118,9 +118,35 @@ export function extractRssImage(item: FeedItem): string | null {
 }
 
 /**
+ * 恒久的な失敗を表すエラー（4xxステータス、不正URL等。再試行不要）
+ */
+export class PermanentFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentFetchError';
+  }
+}
+
+/**
+ * 再試行可能な一時的障害を表すエラー（429, 5xx, タイムアウト, ネットワークエラー等）
+ */
+export class RetryableFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RetryableFetchError';
+  }
+}
+
+/**
  * 記事のURLからOGP画像（og:image / twitter:image）を取得します。
  */
 export async function fetchOgImage(url: string): Promise<string | null> {
+  try {
+    new URL(url);
+  } catch {
+    throw new PermanentFetchError(`Invalid URL format: ${url}`);
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000);
 
@@ -133,7 +159,11 @@ export async function fetchOgImage(url: string): Promise<string | null> {
     });
 
     if (!res.ok) {
-      throw new Error(`Failed to fetch article page. Status: ${res.status}`);
+      if (res.status === 429 || res.status >= 500) {
+        throw new RetryableFetchError(`Retryable HTTP error ${res.status} when fetching ${url}`);
+      } else {
+        throw new PermanentFetchError(`Permanent HTTP error ${res.status} when fetching ${url}`);
+      }
     }
 
     const html = await res.text();
@@ -148,6 +178,14 @@ export async function fetchOgImage(url: string): Promise<string | null> {
     }
 
     return null;
+  } catch (error) {
+    if (error instanceof PermanentFetchError || error instanceof RetryableFetchError) {
+      throw error;
+    }
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new RetryableFetchError(`Request timed out while fetching ${url}`);
+    }
+    throw new RetryableFetchError(`Network error while fetching ${url}: ${String(error)}`);
   } finally {
     clearTimeout(timeoutId);
   }

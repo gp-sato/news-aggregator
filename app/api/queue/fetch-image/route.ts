@@ -1,30 +1,64 @@
 import { handleCallback } from '@vercel/queue';
 import { prisma } from '@/lib/prisma';
 import { RobotsTxtCache } from '@/lib/robots';
-import { fetchOgImage, updateImageStatus } from '@/lib/news';
+import { fetchOgImage, updateImageStatus, PermanentFetchError } from '@/lib/news';
 
-export const POST = handleCallback(async (payload: { newsItemId: string; link: string }) => {
+// PROCESSING のタイムアウト閾値 (5分)
+const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
+
+export const POST = handleCallback(async (
+  payload: { newsItemId: string; link: string },
+  metadata
+) => {
   const { newsItemId, link } = payload;
-  console.log(`[Queue Worker] Processing image fetch for newsItemId: ${newsItemId}, link: ${link}`);
+  const messageId = metadata?.messageId ?? null;
+  const now = new Date();
+  const expiredThreshold = new Date(now.getTime() - PROCESSING_TIMEOUT_MS);
 
-  // 1. 排他制御: QUEUED -> PROCESSING へ条件付き更新
-  try {
-    const updated = await prisma.newsItem.updateMany({
-      where: {
-        id: newsItemId,
-        imageFetchStatus: 'QUEUED',
-      },
-      data: {
-        imageFetchStatus: 'PROCESSING',
-      },
+  console.log(`[Queue Worker] Processing image fetch for newsItemId: ${newsItemId}, link: ${link}, messageId: ${messageId}`);
+
+  // 1. 排他制御: QUEUED、同一 messageId の再配信、またはタイムアウトした PROCESSING から PROCESSING へ移行
+  // DBエラーが発生した場合は catch せず throw することで Queue にリトライさせる
+  const updated = await prisma.newsItem.updateMany({
+    where: {
+      id: newsItemId,
+      OR: [
+        { imageFetchStatus: 'QUEUED' },
+        {
+          imageFetchStatus: 'PROCESSING',
+          imageFetchMessageId: messageId ?? undefined,
+        },
+        {
+          imageFetchStatus: 'PROCESSING',
+          imageFetchStartedAt: { lt: expiredThreshold },
+        },
+      ],
+    },
+    data: {
+      imageFetchStatus: 'PROCESSING',
+      imageFetchStartedAt: now,
+      imageFetchMessageId: messageId,
+    },
+  });
+
+  if (updated.count === 0) {
+    // 既に更新されなかった場合、現在のステータスを確認して安全にスキップ（ACK）
+    const item = await prisma.newsItem.findUnique({
+      where: { id: newsItemId },
+      select: { imageFetchStatus: true, imageFetchMessageId: true },
     });
 
-    if (updated.count === 0) {
-      console.log(`[Queue Worker] Item ${newsItemId} is already processed or processing. Skipping.`);
-      return;
+    if (item) {
+      if (['SUCCESS', 'NOT_FOUND', 'FAILED'].includes(item.imageFetchStatus)) {
+        console.log(`[Queue Worker] Item ${newsItemId} is already finished with status ${item.imageFetchStatus}. Skipping.`);
+        return;
+      }
+      if (item.imageFetchStatus === 'PROCESSING') {
+        console.log(`[Queue Worker] Item ${newsItemId} is currently being processed by another active worker (messageId: ${item.imageFetchMessageId}). Skipping.`);
+        return;
+      }
     }
-  } catch (error) {
-    console.error(`[Queue Worker] Failed to update status to PROCESSING for newsItemId ${newsItemId}:`, error);
+    console.log(`[Queue Worker] Item ${newsItemId} not found or skipped.`);
     return;
   }
 
@@ -52,7 +86,14 @@ export const POST = handleCallback(async (payload: { newsItemId: string; link: s
       console.log(`[Queue Worker] No image found for newsItemId ${newsItemId}`);
     }
   } catch (error) {
-    console.error(`[Queue Worker] Failed to fetch OGP image for ${link}:`, error);
-    await updateImageStatus(newsItemId, null, 'FAILED');
+    if (error instanceof PermanentFetchError) {
+      console.error(`[Queue Worker] Permanent failure for ${link}:`, error.message);
+      await updateImageStatus(newsItemId, null, 'FAILED');
+      return; // ACK (再試行しない)
+    }
+
+    // 429, 5xx, タイムアウト, ネットワークエラー等の再試行可能な障害、または DB エラーは throw
+    console.error(`[Queue Worker] Retryable error occurred for ${link}:`, error);
+    throw error; // Queue にエラーを投げてリトライさせる
   }
 });

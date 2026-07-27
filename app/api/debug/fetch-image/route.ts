@@ -10,9 +10,11 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { RobotsTxtCache } from '@/lib/robots';
-import { fetchOgImage, updateImageStatus } from '@/lib/news';
+import { fetchOgImage, updateImageStatus, PermanentFetchError } from '@/lib/news';
 
 export const dynamic = 'force-dynamic';
+
+const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 
 export async function POST(request: NextRequest) {
   // 本番環境では無効化
@@ -21,29 +23,52 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { newsItemId, link } = body as { newsItemId: string; link: string };
+  const { newsItemId, link, messageId } = body as { newsItemId: string; link: string; messageId?: string };
 
   if (!newsItemId || !link) {
     return Response.json({ error: 'newsItemId and link are required' }, { status: 400 });
   }
 
+  const debugMessageId = messageId ?? 'debug-manual-trigger';
+  const now = new Date();
+  const expiredThreshold = new Date(now.getTime() - PROCESSING_TIMEOUT_MS);
+
   console.log(`[Debug] Processing image fetch for newsItemId: ${newsItemId}, link: ${link}`);
 
-  // 1. 排他制御: QUEUED -> PROCESSING へ条件付き更新
+  // 1. 排他制御: QUEUED, 同一 messageId, または タイムアウトした PROCESSING から PROCESSING へ更新
   try {
     const updated = await prisma.newsItem.updateMany({
       where: {
         id: newsItemId,
-        imageFetchStatus: 'QUEUED',
+        OR: [
+          { imageFetchStatus: 'QUEUED' },
+          {
+            imageFetchStatus: 'PROCESSING',
+            imageFetchMessageId: debugMessageId,
+          },
+          {
+            imageFetchStatus: 'PROCESSING',
+            imageFetchStartedAt: { lt: expiredThreshold },
+          },
+        ],
       },
       data: {
         imageFetchStatus: 'PROCESSING',
+        imageFetchStartedAt: now,
+        imageFetchMessageId: debugMessageId,
       },
     });
 
     if (updated.count === 0) {
+      const item = await prisma.newsItem.findUnique({
+        where: { id: newsItemId },
+        select: { imageFetchStatus: true, imageFetchMessageId: true },
+      });
+
       return Response.json({
-        error: 'Item is not in QUEUED status (already processed or processing)',
+        error: 'Item cannot be locked for processing',
+        currentStatus: item?.imageFetchStatus ?? 'NOT_FOUND',
+        messageId: item?.imageFetchMessageId ?? null,
         newsItemId,
       }, { status: 409 });
     }
@@ -90,11 +115,20 @@ export async function POST(request: NextRequest) {
       });
     }
   } catch (error) {
-    console.error(`[Debug] Failed to fetch OGP image:`, error);
-    await updateImageStatus(newsItemId, null, 'FAILED');
+    if (error instanceof PermanentFetchError) {
+      console.error(`[Debug] Permanent failure:`, error);
+      await updateImageStatus(newsItemId, null, 'FAILED');
+      return Response.json({
+        status: 'failed',
+        reason: 'permanent_failure',
+        newsItemId,
+        details: error.message,
+      }, { status: 400 });
+    }
+
+    console.error(`[Debug] Retryable error:`, error);
     return Response.json({
-      status: 'failed',
-      reason: 'fetch_error',
+      status: 'retryable_error',
       newsItemId,
       details: String(error),
     }, { status: 500 });

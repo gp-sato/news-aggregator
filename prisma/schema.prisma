@@ -56,8 +56,10 @@ model NewsItem {
   enclosureLength Int?
   enclosureType   String?
 
-  imageUrl         String?
-  imageFetchStatus ImageFetchStatus @default(QUEUED)
+  imageUrl            String?
+  imageFetchStatus    ImageFetchStatus @default(QUEUED)
+  imageFetchStartedAt DateTime?
+  imageFetchMessageId String?
 
   sourceId        String
   source          Source   @relation(fields: [sourceId], references: [id])
