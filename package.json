@@ -9,7 +9,9 @@
     "lint": "eslint",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
-    "db:status": "supabase status"
+    "db:status": "supabase status",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
@@ -36,7 +38,9 @@
     "supabase": "^2",
     "tailwindcss": "^4",
     "tsx": "^4.22.4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10",
+    "vitest-mock-extended": "^5.1.0"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
