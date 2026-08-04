@@ -1,8 +1,8 @@
-import { beforeAll } from 'vitest';
+import { beforeAll, vi } from 'vitest';
 
 beforeAll(() => {
   // Force test environment
-  (process.env as NodeJS.ProcessEnv).NODE_ENV = 'test';
+  vi.stubEnv('NODE_ENV', 'test');
 
   const dbUrl = process.env.DATABASE_URL || '';
 
