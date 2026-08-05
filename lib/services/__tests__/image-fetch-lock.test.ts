@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mockDeep, mockReset, DeepMockProxy } from 'vitest-mock-extended';
-import { PrismaClient } from '@prisma/client';
-import { claimImageFetchLock, DEFAULT_PROCESSING_TIMEOUT_MS } from '../image-fetch-lock';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { mockDeep, mockReset } from 'vitest-mock-extended';
+import type { prisma } from '../../prisma';
+import { claimImageFetchLock } from '../image-fetch-lock';
 
-// Create deep mock of PrismaClient
+type PrismaClient = typeof prisma;
+
 const prismaMock = mockDeep<PrismaClient>();
 
 describe('claimImageFetchLock', () => {
@@ -11,17 +12,19 @@ describe('claimImageFetchLock', () => {
     mockReset(prismaMock);
   });
 
-  it('Case 1: Should grant lock when messageId matches (same message retry)', async () => {
+  it('QUEUED・同一messageId・期限切れを原子的にclaimする', async () => {
     prismaMock.newsItem.updateMany.mockResolvedValue({ count: 1 });
 
-    const now = new Date();
+    const now = new Date('2026-08-05T12:00:00.000Z');
+    const timeoutMs = 60_000;
     const result = await claimImageFetchLock(
       {
         itemId: 'item-1',
         messageId: 'msg-retry-1',
         now,
+        timeoutMs,
       },
-      prismaMock as unknown as typeof import('../../prisma').prisma
+      prismaMock
     );
 
     expect(result.acquired).toBe(true);
@@ -32,7 +35,12 @@ describe('claimImageFetchLock', () => {
         OR: [
           { imageFetchStatus: 'QUEUED' },
           { imageFetchStatus: 'PROCESSING', imageFetchMessageId: 'msg-retry-1' },
-          { imageFetchStatus: 'PROCESSING', imageFetchStartedAt: { lt: expect.any(Date) } },
+          {
+            imageFetchStatus: 'PROCESSING',
+            imageFetchStartedAt: {
+              lt: new Date('2026-08-05T11:59:00.000Z'),
+            },
+          },
         ],
       },
       data: {
@@ -43,35 +51,16 @@ describe('claimImageFetchLock', () => {
     });
   });
 
-  it('Case 2: Should recover lock from abandoned/timed-out worker', async () => {
-    prismaMock.newsItem.updateMany.mockResolvedValue({ count: 1 });
-
-    const now = new Date();
-    const result = await claimImageFetchLock(
-      {
-        itemId: 'item-1',
-        messageId: 'new-worker-msg-100',
-        now,
-      },
-      prismaMock as unknown as typeof import('../../prisma').prisma
-    );
-
-    expect(result.acquired).toBe(true);
-    expect(prismaMock.newsItem.updateMany).toHaveBeenCalledOnce();
-  });
-
-  it('Case 3: Should refuse lock when another worker is actively processing', async () => {
-    // DB returns 0 count when update conditions are not met
+  it('条件に合う記事がなければclaim失敗を返す', async () => {
     prismaMock.newsItem.updateMany.mockResolvedValue({ count: 0 });
 
-    const now = new Date();
     const result = await claimImageFetchLock(
       {
         itemId: 'item-1',
         messageId: 'other-worker-msg-2',
-        now,
+        now: new Date('2026-08-05T12:00:00.000Z'),
       },
-      prismaMock as unknown as typeof import('../../prisma').prisma
+      prismaMock
     );
 
     expect(result.acquired).toBe(false);
