@@ -51,6 +51,15 @@ Possible values:
 
 PROCESSING prevents duplicate work when multiple workers execute simultaneously.
 
+claimImageFetchLock() atomically claims work when the item is QUEUED, when the
+same queue message is redelivered, or when an earlier PROCESSING claim has
+expired.
+
+Both the Vercel Queue route and the local debug route call
+processImageFetchJob(). The routes only adapt Queue metadata or HTTP responses;
+locking, robots.txt checks, image fetching, and status updates belong to the
+shared job processor.
+
 
 ---
 
@@ -59,7 +68,8 @@ HTML fetching should
 * run with concurrency = 5
 * use request timeouts
 * convert relative image URLs into absolute URLs
-* treat communication failures as FAILED
+* leave retryable communication failures as PROCESSING and rethrow them for Queue redelivery
+* treat permanent failures as FAILED
 * treat missing metadata as NOT_FOUND
 
 ---
@@ -72,5 +82,7 @@ Preferred modules:
 * resolveArticleUrl()
 * fetchOgImage()
 * updateImageStatus()
+* claimImageFetchLock()
+* processImageFetchJob()
 
 Avoid implementing image fetching as one large function.

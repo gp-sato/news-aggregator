@@ -32,12 +32,19 @@ Accepted
    - `robots.txt` の取得失敗時や 404 時は Fail Open とする。
    - クロール拒否の場合は `imageFetchStatus = FAILED` とし、HTML 取得は行わない。
 
+6. **共通処理とクラッシュ復旧**
+   - Queue Worker とローカルのデバッグルートは、共通の `processImageFetchJob()` を呼び出す。
+   - `claimImageFetchLock()` は `QUEUED`、同一 `messageId` の再配信、またはタイムアウトした `PROCESSING` を条件付き更新で原子的に取得する。
+   - 一時障害は `PROCESSING` を維持して例外を Queue へ戻し、再配信で処理を再開する。恒久障害は `FAILED` で完了する。
+   - Vercel 固有の Queue アダプターは薄く保ち、共通処理は Vitest で Vercel に依存せず検証する。
+
 ## Consequences
 
 メリット:
 - リクエストが平準化され、相手先サーバーへのスパイク負荷がなくなる。
 - バックグラウンド実行による信頼性の向上。
 - robots.txt キャッシュによる余計なリクエストの削減。
+- Queue とデバッグで同一の画像取得ロジックを使うため、ローカル検証と本番挙動の差分が小さくなる。
 
 デメリット:
 - ローカル環境で Queue の検証を行うために Vercel CLI (vercel dev) の動作確認が必要。
