@@ -86,3 +86,16 @@ Preferred modules:
 * processImageFetchJob()
 
 Avoid implementing image fetching as one large function.
+
+---
+
+## Orphaned QUEUED Items Recovery
+
+To prevent processing drops between DB save and Queue enqueue, a recovery mechanism is implemented:
+
+- **DB Transaction**: `saveNewsToDb()` uses `prisma.$transaction` to atomically save news items and category relations
+- **Queue Error Tracking**: `enqueueImageFetch()` returns success/failure counts and failed IDs instead of swallowing errors
+- **Recovery Sweeper**: `recoverOrphanedQueuedItems()` finds items with `imageFetchStatus = 'QUEUED'` older than 5 minutes and re-enqueues them
+- **Automatic Recovery**: `syncNews()` automatically calls the recovery function after each sync cycle
+
+This ensures that items stuck in QUEUED state due to process crashes, network errors, or rate limits are eventually re-processed. The existing `claimImageFetchLock()` mechanism ensures idempotency even if items are re-enqueued multiple times.

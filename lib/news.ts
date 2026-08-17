@@ -396,65 +396,123 @@ export async function saveNewsToDb(items: FeedItem[]) {
     }
   })
 
-  const result = await prisma.newsItem.createMany({
-    data,
-    skipDuplicates: true,
+  // DBトランザクション内で記事保存とカテゴリリレーション作成をアトミックに実行
+  const result = await prisma.$transaction(async (tx) => {
+    const createResult = await tx.newsItem.createMany({
+      data,
+      skipDuplicates: true,
+    })
+
+    if (createResult.count === 0) return { count: 0, queuedArticles: [] as { id: string; link: string }[] }
+
+    // 新規追加された記事を特定してカテゴリリレーションを作成する
+    const savedArticles = await tx.newsItem.findMany({
+      where: {
+        link: {
+          in: items.map((item) => item.link),
+        },
+      },
+      select: {
+        id: true,
+        sourceId: true,
+        link: true,
+        imageFetchStatus: true,
+      },
+    })
+
+    const dbSources = await tx.source.findMany({
+      select: {
+        id: true,
+        defaultCategoryId: true,
+      },
+    })
+
+    const sourceToCategoryMap = new Map(dbSources.map((s) => [s.id, s.defaultCategoryId]))
+
+    const joinRows = savedArticles
+      .map((article) => {
+        const categoryId = sourceToCategoryMap.get(article.sourceId)
+        if (!categoryId) return null
+        return {
+          newsItemId: article.id,
+          categoryId,
+          method: 'source-default',
+        }
+      })
+      .filter((row): row is { newsItemId: string; categoryId: string; method: string } => row !== null)
+
+    if (joinRows.length > 0) {
+      await tx.newsItemCategory.createMany({
+        data: joinRows,
+        skipDuplicates: true,
+      })
+    }
+
+    // キューイング対象（imageFetchStatus が QUEUED のもの）を抽出
+    const queuedArticles = savedArticles
+      .filter((article) => article.imageFetchStatus === 'QUEUED')
+      .map((a) => ({ id: a.id, link: a.link }))
+
+    return { count: createResult.count, queuedArticles }
   })
 
   if (result.count === 0) return { count: 0 }
 
-  // 新規追加された記事を特定してカテゴリリレーションを作成する
-  const savedArticles = await prisma.newsItem.findMany({
+  // トランザクション完了後、Vercel Queues へ送信
+  if (result.queuedArticles.length > 0) {
+    const enqueueResult = await enqueueImageFetch(result.queuedArticles)
+    if (enqueueResult.failureCount > 0) {
+      console.warn(
+        `Queue enqueue completed with ${enqueueResult.successCount} successes and ${enqueueResult.failureCount} failures. Failed IDs: ${enqueueResult.failedIds.join(', ')}`
+      )
+    }
+  }
+
+  return { count: result.count }
+}
+
+/**
+ * 孤立したQUEUED状態の記事を回収し、Queueへ再投入します。
+ * @param thresholdMinutes QUEUED状態とみなす経過時間（分）。デフォルトは5分
+ */
+export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
+  const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000)
+
+  const orphanedItems = await prisma.newsItem.findMany({
     where: {
-      link: {
-        in: items.map((item) => item.link),
+      imageFetchStatus: 'QUEUED',
+      updatedAt: {
+        lt: thresholdDate,
       },
     },
     select: {
       id: true,
-      sourceId: true,
       link: true,
-      imageFetchStatus: true,
+      updatedAt: true,
     },
   })
 
-  const dbSources = await prisma.source.findMany({
-    select: {
-      id: true,
-      defaultCategoryId: true,
-    },
-  })
-
-  const sourceToCategoryMap = new Map(dbSources.map((s) => [s.id, s.defaultCategoryId]))
-
-  const joinRows = savedArticles
-    .map((article) => {
-      const categoryId = sourceToCategoryMap.get(article.sourceId)
-      if (!categoryId) return null
-      return {
-        newsItemId: article.id,
-        categoryId,
-        method: 'source-default',
-      }
-    })
-    .filter((row): row is { newsItemId: string; categoryId: string; method: string } => row !== null)
-
-  if (joinRows.length > 0) {
-    await prisma.newsItemCategory.createMany({
-      data: joinRows,
-      skipDuplicates: true,
-    })
+  if (orphanedItems.length === 0) {
+    console.log('No orphaned QUEUED items found.')
+    return { recoveredCount: 0 }
   }
 
-  // キューイング対象（imageFetchStatus が QUEUED のもの）を Vercel Queues へ送信
-  const queuedArticles = savedArticles.filter(
-    (article) => article.imageFetchStatus === 'QUEUED'
+  console.log(
+    `Found ${orphanedItems.length} orphaned QUEUED items (older than ${thresholdMinutes} minutes). Attempting to re-enqueue...`
   )
-  if (queuedArticles.length > 0) {
-    await enqueueImageFetch(queuedArticles.map((a) => ({ id: a.id, link: a.link })))
+
+  const itemsToEnqueue = orphanedItems.map((item) => ({ id: item.id, link: item.link }))
+  const enqueueResult = await enqueueImageFetch(itemsToEnqueue)
+
+  console.log(
+    `Recovery completed: ${enqueueResult.successCount} re-enqueued successfully, ${enqueueResult.failureCount} failed.`
+  )
+
+  if (enqueueResult.failureCount > 0) {
+    console.warn(`Failed to re-enqueue orphaned items with IDs: ${enqueueResult.failedIds.join(', ')}`)
   }
 
-  return { count: result.count }
+  return { recoveredCount: enqueueResult.successCount }
 }
 
 /**
@@ -491,12 +549,16 @@ export async function syncNews() {
 
   if (newItems.length === 0) {
     console.log('All retrieved items already exist in the database.')
-    return { count: 0 }
+  } else {
+    console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
+    const result = await saveNewsToDb(newItems)
+    console.log(`Synchronization complete. Saved ${result.count} new news items.`)
   }
 
-  console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
-  const result = await saveNewsToDb(newItems)
-  console.log(`Synchronization complete. Saved ${result.count} new news items.`)
+  // 孤立したQUEUED状態の記事を回収
+  console.log('Running orphaned QUEUED items recovery...')
+  const recoveryResult = await recoverOrphanedQueuedItems()
+  console.log(`Recovery complete. Re-enqueued ${recoveryResult.recoveredCount} orphaned items.`)
 
-  return result
+  return { count: newItems.length }
 }

@@ -38,6 +38,13 @@ Accepted
    - 一時障害は `PROCESSING` を維持して例外を Queue へ戻し、再配信で処理を再開する。恒久障害は `FAILED` で完了する。
    - Vercel 固有の Queue アダプターは薄く保ち、共通処理は Vitest で Vercel に依存せず検証する。
 
+7. **DB保存とQueue投入間の処理取りこぼし対策 (Sweeper)**
+   - `saveNewsToDb()` は `prisma.$transaction` を使用し、記事保存とカテゴリリレーション作成をアトミックに実行する。
+   - `enqueueImageFetch()` は送信成功件数、失敗件数、失敗した記事ID一覧を返却し、エラーを握りつぶさない。
+   - `recoverOrphanedQueuedItems()` は `imageFetchStatus = 'QUEUED'` かつ `updatedAt` が5分以上前の記事を検出し、Queueへ再投入する。
+   - `syncNews()` は各同期サイクル終了後に自動的に回収処理を実行し、孤立したQUEUED記事を救出する。
+   - 既存の `claimImageFetchLock()` によるアトミックロック機構により、重複してQueueに投入されても安全に1回のみ実行される。
+
 ## Consequences
 
 メリット:
