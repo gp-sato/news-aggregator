@@ -56,6 +56,11 @@ model NewsItem {
   enclosureLength Int?
   enclosureType   String?
 
+  imageUrl            String?
+  imageFetchStatus    ImageFetchStatus @default(QUEUED)
+  imageFetchStartedAt DateTime?
+  imageFetchMessageId String?
+
   sourceId        String
   source          Source   @relation(fields: [sourceId], references: [id])
 
@@ -63,6 +68,14 @@ model NewsItem {
 
   createdAt       DateTime @default(now()) // DBへの保存日時
   updatedAt       DateTime @updatedAt      // レコード更新日時
+}
+
+enum ImageFetchStatus {
+  QUEUED
+  PROCESSING
+  SUCCESS
+  NOT_FOUND
+  FAILED
 }
 
 model NewsItemCategory {

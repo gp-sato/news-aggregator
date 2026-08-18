@@ -4,5 +4,15 @@
       "path": "/api/cron/fetch-news",
       "schedule": "0 22 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "app/api/queue/fetch-image/route.ts": {
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "image-fetch"
+        }
+      ]
+    }
+  }
 }
