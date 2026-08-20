@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { syncNews } from '@/lib/news'
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 60 // Vercel Functionの最大実行時間を60秒に設定
 
 export async function GET(request: NextRequest) {
   try {

@@ -32,34 +32,43 @@ export async function enqueueImageFetch(newsItems: { id: string; link: string }[
     return { successCount: 0, failureCount: 0, failedIds: [] };
   }
 
-  const results = await Promise.allSettled(
-    newsItems.map(async (item, index) => {
-      let domain = 'unknown';
-      try {
-        domain = new URL(item.link).hostname;
-      } catch {
-        // 不正なURLの場合はデフォルト値のまま
-      }
+  const CHUNK_SIZE = 10; // チャンク分割サイズ
+  const allResults: Array<PromiseSettledResult<{ id: string; success: boolean }>> = [];
 
-      const delaySeconds = calculateQueueDelay(index, domain);
+  // チャンク分割並列送信
+  for (let i = 0; i < newsItems.length; i += CHUNK_SIZE) {
+    const chunk = newsItems.slice(i, i + CHUNK_SIZE);
+    const chunkResults = await Promise.allSettled(
+      chunk.map(async (item, chunkIndex) => {
+        const globalIndex = i + chunkIndex;
+        let domain = 'unknown';
+        try {
+          domain = new URL(item.link).hostname;
+        } catch {
+          // 不正なURLの場合はデフォルト値のまま
+        }
 
-      // 'image-fetch' トピックにメッセージを送信
-      await send('image-fetch', {
-        newsItemId: item.id,
-        link: item.link,
-      }, {
-        delaySeconds,
-      });
-      console.log(`Enqueued image fetch for newsItemId ${item.id} with ${delaySeconds}s delay.`);
-      return { id: item.id, success: true };
-    })
-  );
+        const delaySeconds = calculateQueueDelay(globalIndex, domain);
 
-  const successCount = results.filter((r) => r.status === 'fulfilled').length;
-  const failureCount = results.length - successCount;
+        // 'image-fetch' トピックにメッセージを送信
+        await send('image-fetch', {
+          newsItemId: item.id,
+          link: item.link,
+        }, {
+          delaySeconds,
+        });
+        console.log(`Enqueued image fetch for newsItemId ${item.id} with ${delaySeconds}s delay.`);
+        return { id: item.id, success: true };
+      })
+    );
+    allResults.push(...chunkResults);
+  }
+
+  const successCount = allResults.filter((r) => r.status === 'fulfilled').length;
+  const failureCount = allResults.length - successCount;
   const failedIds: string[] = [];
 
-  results.forEach((result, index) => {
+  allResults.forEach((result, index) => {
     if (result.status === 'rejected') {
       const failedId = newsItems[index].id;
       failedIds.push(failedId);

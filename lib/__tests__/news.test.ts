@@ -1,5 +1,4 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { recoverOrphanedQueuedItems } from '../news';
 import { prisma } from '../prisma';
 
 // Mock prisma
@@ -7,6 +6,10 @@ vi.mock('../prisma', () => ({
   prisma: {
     newsItem: {
       findMany: vi.fn(),
+    },
+    source: {
+      findMany: vi.fn(),
+      update: vi.fn().mockResolvedValue({}),
     },
   },
 }));
@@ -16,6 +19,7 @@ vi.mock('../queue', () => ({
   enqueueImageFetch: vi.fn(),
 }));
 
+import { fetchRssFeeds, recoverOrphanedQueuedItems } from '../news';
 import { enqueueImageFetch } from '../queue';
 
 describe('recoverOrphanedQueuedItems', () => {
@@ -40,6 +44,10 @@ describe('recoverOrphanedQueuedItems', () => {
         id: true,
         link: true,
         updatedAt: true,
+      },
+      take: 50,
+      orderBy: {
+        updatedAt: 'asc',
       },
     });
     expect(enqueueImageFetch).not.toHaveBeenCalled();
@@ -193,6 +201,10 @@ describe('recoverOrphanedQueuedItems', () => {
         link: true,
         updatedAt: true,
       },
+      take: 50,
+      orderBy: {
+        updatedAt: 'asc',
+      },
     });
   });
 
@@ -213,6 +225,108 @@ describe('recoverOrphanedQueuedItems', () => {
         link: true,
         updatedAt: true,
       },
+      take: 50,
+      orderBy: {
+        updatedAt: 'asc',
+      },
     });
   });
 });
+
+describe('fetchRssFeeds', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('RSS取得時にタイムアウト設定とUser-Agentヘッダーを渡す', async () => {
+    const mockSource = {
+      id: 'source-1',
+      name: 'Test Source',
+      url: 'https://example.com/rss.xml',
+      enabled: true,
+      defaultCategoryId: 'tech',
+      language: 'ja',
+      country: 'JP',
+      lastFetchedAt: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue([mockSource]);
+
+    const sampleRssXml = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Test Feed</title>
+          <link>https://example.com</link>
+          <item>
+            <title>Test Article</title>
+            <link>https://example.com/article-1</link>
+            <pubDate>Thu, 20 Aug 2026 12:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(sampleRssXml),
+    } as never);
+
+    const items = await fetchRssFeeds();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://example.com/rss.xml',
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        headers: expect.objectContaining({
+          'User-Agent': expect.stringContaining('Mozilla/5.0'),
+        }),
+      })
+    );
+
+    expect(items.length).toBe(1);
+    expect(items[0].title).toBe('Test Article');
+    expect(items[0].link).toBe('https://example.com/article-1');
+
+    global.fetch = originalFetch;
+  });
+
+  it('タイムアウト(TimeoutError)発生時、エラーを記録して安全に空配列を返す', async () => {
+    const mockSource = {
+      id: 'source-timeout',
+      name: 'Slow Source',
+      url: 'https://slow.example.com/rss.xml',
+      enabled: true,
+      defaultCategoryId: 'tech',
+      language: 'ja',
+      country: 'JP',
+      lastFetchedAt: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue([mockSource]);
+
+    const timeoutError = new Error('The operation was aborted due to timeout');
+    timeoutError.name = 'TimeoutError';
+
+    global.fetch = vi.fn().mockRejectedValue(timeoutError);
+
+    const items = await fetchRssFeeds();
+
+    expect(items).toEqual([]);
+    expect(prisma.source.update).toHaveBeenCalledWith({
+      where: { id: 'source-timeout' },
+      data: { lastError: expect.stringContaining('TimeoutError') },
+    });
+
+    global.fetch = originalFetch;
+  });
+});
+

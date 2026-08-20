@@ -137,4 +137,34 @@ describe('enqueueImageFetch', () => {
       { delaySeconds: 4 }
     );
   });
+
+  it('10件を超えるアイテムがある場合、チャンク（10件ずつ）に分割して送信する', async () => {
+    vi.mocked(send).mockResolvedValue({ messageId: 'test-id' } as never);
+
+    const items = Array.from({ length: 25 }, (_, i) => ({
+      id: `item-${i + 1}`,
+      link: `https://example.com/article${i + 1}`,
+    }));
+
+    const result = await enqueueImageFetch(items);
+
+    expect(result.successCount).toBe(25);
+    expect(result.failureCount).toBe(0);
+    expect(send).toHaveBeenCalledTimes(25);
+
+    // 最初のアイテム（globalIndex 0）と最後のアイテム（globalIndex 24）のディレイを検証
+    expect(send).toHaveBeenNthCalledWith(
+      1,
+      'image-fetch',
+      { newsItemId: 'item-1', link: 'https://example.com/article1' },
+      { delaySeconds: 0 }
+    );
+    expect(send).toHaveBeenNthCalledWith(
+      25,
+      'image-fetch',
+      { newsItemId: 'item-25', link: 'https://example.com/article25' },
+      { delaySeconds: 48 }
+    );
+  });
 });
+

@@ -236,7 +236,13 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
       const fetchOptions = process.env.NODE_ENV === 'production'
         ? { next: { revalidate: 60 * 10 } }
         : { cache: 'no-store' as const }
-      const res = await fetch(source.url, fetchOptions)
+      const res = await fetch(source.url, {
+        ...fetchOptions,
+        signal: AbortSignal.timeout(8000), // 8秒でタイムアウト
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      })
       if (!res.ok) {
         throw new Error(`Failed to fetch XML. Status: ${res.status}`)
       }
@@ -271,7 +277,12 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         contentEncoded: item.contentEncoded,
       }))
     } catch (error) {
-      console.error(`Failed to fetch RSS from ${source.name}:`, error)
+      // タイムアウトまたはネットワークエラーの場合は安全にスキップ
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        console.error(`RSS fetch timeout for ${source.name}:`, error)
+      } else {
+        console.error(`Failed to fetch RSS from ${source.name}:`, error)
+      }
 
       // エラー情報を記録
       await prisma.source.update({
@@ -489,6 +500,10 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
       id: true,
       link: true,
       updatedAt: true,
+    },
+    take: 50, // 1回あたりの最大回収件数を50件に制限
+    orderBy: {
+      updatedAt: 'asc', // 古いものから優先回収
     },
   })
 
