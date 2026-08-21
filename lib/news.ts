@@ -371,7 +371,7 @@ export async function getNewsFromDb(params: {
  * 重複するURL（link）の記事は自動的にスキップされます。
  */
 export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions?: EnqueueOptions }) {
-  if (items.length === 0) return { count: 0 }
+  if (items.length === 0) return { count: 0, errors: [] as string[] }
 
   const data = items.map((item) => {
     const isGoogle = isGoogleNews(item.link, item.sourceId)
@@ -467,19 +467,23 @@ export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions
     return { count: createResult.count, queuedArticles }
   })
 
-  if (result.count === 0) return { count: 0 }
+  if (result.count === 0) return { count: 0, errors: [] as string[] }
+
+  const errors: string[] = []
 
   // トランザクション完了後、Vercel Queues へ送信（全体締切オプションを必ず伝播）
   if (result.queuedArticles.length > 0) {
     const enqueueResult = await enqueueImageFetch(result.queuedArticles, options?.enqueueOptions)
     if (enqueueResult.failureCount > 0) {
+      const queueError = `Queue enqueue failed: ${enqueueResult.failedIds.join(', ')}`
       console.warn(
         `Queue enqueue completed with ${enqueueResult.successCount} successes and ${enqueueResult.failureCount} failures. Failed IDs: ${enqueueResult.failedIds.join(', ')}`
       )
+      errors.push(queueError)
     }
   }
 
-  return { count: result.count }
+  return { count: result.count, errors }
 }
 
 /**
@@ -510,7 +514,7 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, o
 
   if (orphanedItems.length === 0) {
     console.log('No orphaned QUEUED items found.')
-    return { recoveredCount: 0 }
+    return { recoveredCount: 0, errors: [] as string[] }
   }
 
   console.log(
@@ -524,11 +528,14 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, o
     `Recovery completed: ${enqueueResult.successCount} re-enqueued successfully, ${enqueueResult.failureCount} failed.`
   )
 
+  const errors: string[] = []
   if (enqueueResult.failureCount > 0) {
+    const queueError = `Queue enqueue failed: ${enqueueResult.failedIds.join(', ')}`
     console.warn(`Failed to re-enqueue orphaned items with IDs: ${enqueueResult.failedIds.join(', ')}`)
+    errors.push(queueError)
   }
 
-  return { recoveredCount: enqueueResult.successCount }
+  return { recoveredCount: enqueueResult.successCount, errors }
 }
 
 export interface SyncNewsResult {
@@ -567,6 +574,7 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise
           enqueueOptions: { deadline },
         })
         addedCount = result.count
+        errors.push(...result.errors)
         console.log(`Synchronization complete. Saved ${result.count} new news items.`)
       } else {
         console.log('All retrieved items already exist in the database.')
@@ -585,6 +593,7 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise
     console.log('Running orphaned QUEUED items recovery...')
     const recoveryResult = await recoverOrphanedQueuedItems(5, { deadline })
     recoveredCount = recoveryResult.recoveredCount
+    errors.push(...recoveryResult.errors)
     console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`)
   } catch (sweeperError) {
     console.error('Error during orphaned QUEUED items recovery:', sweeperError)

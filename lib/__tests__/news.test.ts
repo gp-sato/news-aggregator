@@ -39,7 +39,7 @@ describe('recoverOrphanedQueuedItems', () => {
 
     const result = await recoverOrphanedQueuedItems();
 
-    expect(result).toEqual({ recoveredCount: 0 });
+    expect(result).toEqual({ recoveredCount: 0, errors: [] });
     expect(prisma.newsItem.findMany).toHaveBeenCalledWith({
       where: {
         imageFetchStatus: 'QUEUED',
@@ -111,14 +111,14 @@ describe('recoverOrphanedQueuedItems', () => {
 
     const result = await recoverOrphanedQueuedItems();
 
-    expect(result).toEqual({ recoveredCount: 2 });
+    expect(result).toEqual({ recoveredCount: 2, errors: [] });
     expect(enqueueImageFetch).toHaveBeenCalledWith([
       { id: 'item-1', link: 'https://example.com/article1' },
       { id: 'item-2', link: 'https://example.com/article2' },
     ], { deadline: undefined });
   });
 
-  it('一部の再投入が失敗した場合、成功数のみを返す', async () => {
+  it('一部の再投入が失敗した場合、成功数とQueueエラーを返す', async () => {
     const orphanedItems = [
       {
         id: 'item-1',
@@ -188,7 +188,30 @@ describe('recoverOrphanedQueuedItems', () => {
 
     const result = await recoverOrphanedQueuedItems();
 
-    expect(result).toEqual({ recoveredCount: 2 });
+    expect(result).toEqual({
+      recoveredCount: 2,
+      errors: ['Queue enqueue failed: item-2'],
+    });
+  });
+
+  it('Queue再投入の失敗をerrorsに記録する', async () => {
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
+      {
+        id: 'orphaned-1',
+        link: 'https://example.com/orphaned-1',
+        updatedAt: new Date('2026-08-01T00:00:00Z'),
+      } as never,
+    ]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 0,
+      failureCount: 1,
+      failedIds: ['orphaned-1'],
+    });
+
+    const result = await recoverOrphanedQueuedItems();
+
+    expect(result.recoveredCount).toBe(0);
+    expect(result.errors).toContain('Queue enqueue failed: orphaned-1');
   });
 
   it('カスタムの閾値（分）を指定できる', async () => {
@@ -382,6 +405,39 @@ describe('saveNewsToDb', () => {
       { deadline: testDeadline }
     );
   });
+
+  it('Queue送信の失敗をerrorsに記録する', async () => {
+    vi.mocked(prisma.newsItem.createMany).mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
+      {
+        id: 'new-item-1',
+        sourceId: 'source-1',
+        link: 'https://example.com/article-1',
+        imageFetchStatus: 'QUEUED',
+      } as never,
+    ]);
+    vi.mocked(prisma.source.findMany).mockResolvedValue([
+      {
+        id: 'source-1',
+        defaultCategoryId: 'tech',
+      } as never,
+    ]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 0,
+      failureCount: 1,
+      failedIds: ['new-item-1'],
+    });
+
+    const result = await saveNewsToDb([
+      {
+        title: 'Article 1',
+        link: 'https://example.com/article-1',
+        sourceId: 'source-1',
+      },
+    ]);
+
+    expect(result.errors).toContain('Queue enqueue failed: new-item-1');
+  });
 });
 
 describe('syncNews', () => {
@@ -429,6 +485,26 @@ describe('syncNews', () => {
     expect(result.addedCount).toBe(0);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]).toContain('Database connection failed');
+  });
+
+  it('SweeperのQueue再投入失敗をerrors配列に記録する', async () => {
+    vi.mocked(prisma.source.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
+      {
+        id: 'orphaned-1',
+        link: 'https://example.com/orphaned-1',
+        updatedAt: new Date('2026-08-01T00:00:00Z'),
+      } as never,
+    ]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 0,
+      failureCount: 1,
+      failedIds: ['orphaned-1'],
+    });
+
+    const result = await syncNews();
+
+    expect(result.errors).toContain('Queue enqueue failed: orphaned-1');
   });
 });
 
