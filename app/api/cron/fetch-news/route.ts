@@ -21,13 +21,14 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 同期処理の実行
-    const result = await syncNews()
+    // 50秒の内部タイムバジェットを指定して実行
+    const result = await syncNews({ deadlineBudgetMs: 50000 })
 
     return Response.json({
       success: true,
       message: `News feed synchronized successfully.`,
-      addedCount: result.count,
+      addedCount: result.addedCount,
+      recoveredCount: result.recoveredCount,
     })
   } catch (error) {
     console.error('Error in Cron Job /api/cron/fetch-news:', error)

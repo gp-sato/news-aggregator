@@ -103,7 +103,7 @@ describe('enqueueImageFetch', () => {
     expect(send).toHaveBeenCalledWith(
       'image-fetch',
       { newsItemId: 'item-1', link: 'not-a-valid-url' },
-      { delaySeconds: 0 }
+      { delaySeconds: 0, idempotencyKey: 'image-fetch-item-1' }
     );
   });
 
@@ -122,19 +122,19 @@ describe('enqueueImageFetch', () => {
       1,
       'image-fetch',
       { newsItemId: 'item-1', link: 'https://example.com/article1' },
-      { delaySeconds: 0 }
+      { delaySeconds: 0, idempotencyKey: 'image-fetch-item-1' }
     );
     expect(send).toHaveBeenNthCalledWith(
       2,
       'image-fetch',
       { newsItemId: 'item-2', link: 'https://example.com/article2' },
-      { delaySeconds: 2 }
+      { delaySeconds: 2, idempotencyKey: 'image-fetch-item-2' }
     );
     expect(send).toHaveBeenNthCalledWith(
       3,
       'image-fetch',
       { newsItemId: 'item-3', link: 'https://example.com/article3' },
-      { delaySeconds: 4 }
+      { delaySeconds: 4, idempotencyKey: 'image-fetch-item-3' }
     );
   });
 
@@ -157,14 +157,88 @@ describe('enqueueImageFetch', () => {
       1,
       'image-fetch',
       { newsItemId: 'item-1', link: 'https://example.com/article1' },
-      { delaySeconds: 0 }
+      { delaySeconds: 0, idempotencyKey: 'image-fetch-item-1' }
     );
     expect(send).toHaveBeenNthCalledWith(
       25,
       'image-fetch',
       { newsItemId: 'item-25', link: 'https://example.com/article25' },
-      { delaySeconds: 48 }
+      { delaySeconds: 48, idempotencyKey: 'image-fetch-item-25' }
     );
   });
+
+  it('idempotencyKeyが付与されていること', async () => {
+    vi.mocked(send).mockResolvedValue({ messageId: 'test-id' } as never);
+
+    const items = [
+      { id: 'item-1', link: 'https://example.com/article1' },
+      { id: 'item-2', link: 'https://example.com/article2' },
+    ];
+
+    await enqueueImageFetch(items);
+
+    expect(send).toHaveBeenNthCalledWith(
+      1,
+      'image-fetch',
+      { newsItemId: 'item-1', link: 'https://example.com/article1' },
+      { delaySeconds: 0, idempotencyKey: 'image-fetch-item-1' }
+    );
+    expect(send).toHaveBeenNthCalledWith(
+      2,
+      'image-fetch',
+      { newsItemId: 'item-2', link: 'https://example.com/article2' },
+      { delaySeconds: 2, idempotencyKey: 'image-fetch-item-2' }
+    );
+  });
+
+  it('deadlineが超過した場合、残りのアイテムをQUEUEDのまま残す', async () => {
+    vi.mocked(send).mockResolvedValue({ messageId: 'test-id' } as never);
+
+    const items = [
+      { id: 'item-1', link: 'https://example.com/article1' },
+      { id: 'item-2', link: 'https://example.com/article2' },
+      { id: 'item-3', link: 'https://example.com/article3' },
+    ];
+
+    // 過去のdeadlineを設定（即座に超過）
+    const result = await enqueueImageFetch(items, { deadline: Date.now() - 1000 });
+
+    // 全てdeadline超過として失敗扱い
+    expect(result.successCount).toBe(0);
+    expect(result.failureCount).toBe(3);
+    expect(result.failedIds).toEqual(['item-1', 'item-2', 'item-3']);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('deadlineが設定されていない場合、全件送信を試みる', async () => {
+    vi.mocked(send).mockResolvedValue({ messageId: 'test-id' } as never);
+
+    const items = [
+      { id: 'item-1', link: 'https://example.com/article1' },
+      { id: 'item-2', link: 'https://example.com/article2' },
+    ];
+
+    const result = await enqueueImageFetch(items);
+
+    expect(result.successCount).toBe(2);
+    expect(result.failureCount).toBe(0);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('send処理が応答しない場合、個別タイムアウト(timeoutMs)で中断して失敗として記録する', async () => {
+    // 解決しないPromiseを返す
+    vi.mocked(send).mockImplementation(() => new Promise(() => {}));
+
+    const items = [
+      { id: 'item-slow', link: 'https://example.com/slow-article' },
+    ];
+
+    const result = await enqueueImageFetch(items, { timeoutMs: 50 });
+
+    expect(result.successCount).toBe(0);
+    expect(result.failureCount).toBe(1);
+    expect(result.failedIds).toEqual(['item-slow']);
+  });
 });
+
 

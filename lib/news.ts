@@ -485,8 +485,9 @@ export async function saveNewsToDb(items: FeedItem[]) {
 /**
  * 孤立したQUEUED状態の記事を回収し、Queueへ再投入します。
  * @param thresholdMinutes QUEUED状態とみなす経過時間（分）。デフォルトは5分
+ * @param options オプション（deadline等）
  */
-export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
+export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, options?: { deadline?: number }) {
   const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000)
 
   const orphanedItems = await prisma.newsItem.findMany({
@@ -517,7 +518,7 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
   )
 
   const itemsToEnqueue = orphanedItems.map((item) => ({ id: item.id, link: item.link }))
-  const enqueueResult = await enqueueImageFetch(itemsToEnqueue)
+  const enqueueResult = await enqueueImageFetch(itemsToEnqueue, { deadline: options?.deadline })
 
   console.log(
     `Recovery completed: ${enqueueResult.successCount} re-enqueued successfully, ${enqueueResult.failureCount} failed.`
@@ -533,47 +534,49 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
 /**
  * RSSから最新ニュースを取得し、データベースに保存する一連の処理を実行します（Cronから呼び出す用）。
  */
-export async function syncNews() {
+export async function syncNews(options?: { deadlineBudgetMs?: number }) {
+  const deadline = options?.deadlineBudgetMs ? Date.now() + options.deadlineBudgetMs : Date.now() + 50000 // デフォルト50秒予算
   console.log('Starting RSS feed synchronization...')
-  const latestItems = await fetchRssFeeds()
+  let addedCount = 0
 
-  if (latestItems.length === 0) {
-    console.log('No items retrieved from RSS feeds.')
-    return { count: 0 }
+  // 1. RSS取得と新着記事の保存（エラー時もSweeperへ継続）
+  try {
+    const latestItems = await fetchRssFeeds()
+
+    if (latestItems.length > 0) {
+      const links = latestItems.map((item) => item.link).filter(Boolean)
+      const existingItems = await prisma.newsItem.findMany({
+        where: { link: { in: links } },
+        select: { link: true },
+      })
+      const existingLinks = new Set(existingItems.map((item) => item.link))
+      const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
+
+      if (newItems.length > 0) {
+        console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
+        const result = await saveNewsToDb(newItems)
+        addedCount = result.count
+        console.log(`Synchronization complete. Saved ${result.count} new news items.`)
+      } else {
+        console.log('All retrieved items already exist in the database.')
+      }
+    } else {
+      console.log('No items retrieved from RSS feeds.')
+    }
+  } catch (rssError) {
+    console.error('Error during RSS fetch / save phase:', rssError)
   }
 
-  // RSSから取得したアイテムのリンク一覧を抽出
-  const links = latestItems.map((item) => item.link).filter(Boolean)
-
-  // DBに既に存在するリンクを取得（重複を避けるためピンポイントで検索）
-  const existingItems = await prisma.newsItem.findMany({
-    where: {
-      link: {
-        in: links,
-      },
-    },
-    select: {
-      link: true,
-    },
-  })
-
-  const existingLinks = new Set(existingItems.map((item) => item.link))
-
-  // DBに存在しない新規アイテムのみをフィルタリング
-  const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
-
-  if (newItems.length === 0) {
-    console.log('All retrieved items already exist in the database.')
-  } else {
-    console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
-    const result = await saveNewsToDb(newItems)
-    console.log(`Synchronization complete. Saved ${result.count} new news items.`)
+  // 2. RSSの成否に関わらず、孤立キューの回収 Sweeper を必ず実行
+  let recoveredCount = 0
+  try {
+    console.log('Running orphaned QUEUED items recovery...')
+    const recoveryResult = await recoverOrphanedQueuedItems(5, { deadline })
+    recoveredCount = recoveryResult.recoveredCount
+    console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`)
+  } catch (sweeperError) {
+    console.error('Error during orphaned QUEUED items recovery:', sweeperError)
   }
 
-  // 孤立したQUEUED状態の記事を回収
-  console.log('Running orphaned QUEUED items recovery...')
-  const recoveryResult = await recoverOrphanedQueuedItems()
-  console.log(`Recovery complete. Re-enqueued ${recoveryResult.recoveredCount} orphaned items.`)
-
-  return { count: newItems.length }
+  return { addedCount, recoveredCount }
 }

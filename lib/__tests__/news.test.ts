@@ -6,11 +6,13 @@ vi.mock('../prisma', () => ({
   prisma: {
     newsItem: {
       findMany: vi.fn(),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     source: {
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockResolvedValue({}),
     },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -19,7 +21,7 @@ vi.mock('../queue', () => ({
   enqueueImageFetch: vi.fn(),
 }));
 
-import { fetchRssFeeds, recoverOrphanedQueuedItems } from '../news';
+import { fetchRssFeeds, recoverOrphanedQueuedItems, syncNews } from '../news';
 import { enqueueImageFetch } from '../queue';
 
 describe('recoverOrphanedQueuedItems', () => {
@@ -108,7 +110,7 @@ describe('recoverOrphanedQueuedItems', () => {
     expect(enqueueImageFetch).toHaveBeenCalledWith([
       { id: 'item-1', link: 'https://example.com/article1' },
       { id: 'item-2', link: 'https://example.com/article2' },
-    ]);
+    ], { deadline: undefined });
   });
 
   it('一部の再投入が失敗した場合、成功数のみを返す', async () => {
@@ -329,4 +331,37 @@ describe('fetchRssFeeds', () => {
     global.fetch = originalFetch;
   });
 });
+
+describe('syncNews', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('RSSで新着記事が0件の場合でも、孤立キュー回収(Sweeper)を必ず実行する', async () => {
+    // RSSソースなし -> fetchRssFeedsは空配列を返す
+    vi.mocked(prisma.source.findMany).mockResolvedValue([]);
+    // Sweeper対象アイテムが1件存在
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
+      {
+        id: 'orphaned-1',
+        link: 'https://example.com/orphaned-1',
+        updatedAt: new Date('2026-08-01T00:00:00Z'),
+      } as never,
+    ]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 1,
+      failureCount: 0,
+      failedIds: [],
+    });
+
+    const result = await syncNews();
+
+    expect(result).toEqual({ addedCount: 0, recoveredCount: 1 });
+    expect(enqueueImageFetch).toHaveBeenCalledWith(
+      [{ id: 'orphaned-1', link: 'https://example.com/orphaned-1' }],
+      { deadline: expect.any(Number) }
+    );
+  });
+});
+
 
