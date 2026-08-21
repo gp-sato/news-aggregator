@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { syncNews } from '@/lib/news'
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 60 // Vercel Functionの最大実行時間を60秒に設定
 
 export async function GET(request: NextRequest) {
   try {
@@ -20,13 +21,29 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 同期処理の実行
-    const result = await syncNews()
+    // 50秒の内部タイムバジェットを指定して実行
+    const result = await syncNews({ deadlineBudgetMs: 50000 })
+
+    // エラーが記録されている場合は 500 を返却してサイレント障害を防止
+    if (result.errors.length > 0) {
+      console.error(`Cron Job completed with ${result.errors.length} error(s):`, result.errors)
+      return Response.json(
+        {
+          success: false,
+          message: 'News sync completed with errors.',
+          addedCount: result.addedCount,
+          recoveredCount: result.recoveredCount,
+          errors: result.errors,
+        },
+        { status: 500 }
+      )
+    }
 
     return Response.json({
       success: true,
       message: `News feed synchronized successfully.`,
-      addedCount: result.count,
+      addedCount: result.addedCount,
+      recoveredCount: result.recoveredCount,
     })
   } catch (error) {
     console.error('Error in Cron Job /api/cron/fetch-news:', error)

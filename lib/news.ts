@@ -1,7 +1,7 @@
 import Parser from 'rss-parser'
 import { prisma } from './prisma'
 import { ImageFetchStatus } from '@prisma/client'
-import { enqueueImageFetch } from './queue'
+import { enqueueImageFetch, EnqueueOptions } from './queue'
 
 export interface FeedItem {
   guid?: string
@@ -236,7 +236,13 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
       const fetchOptions = process.env.NODE_ENV === 'production'
         ? { next: { revalidate: 60 * 10 } }
         : { cache: 'no-store' as const }
-      const res = await fetch(source.url, fetchOptions)
+      const res = await fetch(source.url, {
+        ...fetchOptions,
+        signal: AbortSignal.timeout(8000), // 8秒でタイムアウト
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      })
       if (!res.ok) {
         throw new Error(`Failed to fetch XML. Status: ${res.status}`)
       }
@@ -271,7 +277,12 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         contentEncoded: item.contentEncoded,
       }))
     } catch (error) {
-      console.error(`Failed to fetch RSS from ${source.name}:`, error)
+      // タイムアウトまたはネットワークエラーの場合は安全にスキップ
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        console.error(`RSS fetch timeout for ${source.name}:`, error)
+      } else {
+        console.error(`Failed to fetch RSS from ${source.name}:`, error)
+      }
 
       // エラー情報を記録
       await prisma.source.update({
@@ -359,8 +370,8 @@ export async function getNewsFromDb(params: {
  * 取得したニュース項目をデータベースに一括保存します。
  * 重複するURL（link）の記事は自動的にスキップされます。
  */
-export async function saveNewsToDb(items: FeedItem[]) {
-  if (items.length === 0) return { count: 0 }
+export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions?: EnqueueOptions }) {
+  if (items.length === 0) return { count: 0, errors: [] as string[] }
 
   const data = items.map((item) => {
     const isGoogle = isGoogleNews(item.link, item.sourceId)
@@ -456,26 +467,31 @@ export async function saveNewsToDb(items: FeedItem[]) {
     return { count: createResult.count, queuedArticles }
   })
 
-  if (result.count === 0) return { count: 0 }
+  if (result.count === 0) return { count: 0, errors: [] as string[] }
 
-  // トランザクション完了後、Vercel Queues へ送信
+  const errors: string[] = []
+
+  // トランザクション完了後、Vercel Queues へ送信（全体締切オプションを必ず伝播）
   if (result.queuedArticles.length > 0) {
-    const enqueueResult = await enqueueImageFetch(result.queuedArticles)
+    const enqueueResult = await enqueueImageFetch(result.queuedArticles, options?.enqueueOptions)
     if (enqueueResult.failureCount > 0) {
+      const queueError = `Queue enqueue failed: ${enqueueResult.failedIds.join(', ')}`
       console.warn(
         `Queue enqueue completed with ${enqueueResult.successCount} successes and ${enqueueResult.failureCount} failures. Failed IDs: ${enqueueResult.failedIds.join(', ')}`
       )
+      errors.push(queueError)
     }
   }
 
-  return { count: result.count }
+  return { count: result.count, errors }
 }
 
 /**
  * 孤立したQUEUED状態の記事を回収し、Queueへ再投入します。
  * @param thresholdMinutes QUEUED状態とみなす経過時間（分）。デフォルトは5分
+ * @param options オプション（deadline等）
  */
-export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
+export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, options?: { deadline?: number }) {
   const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000)
 
   const orphanedItems = await prisma.newsItem.findMany({
@@ -490,11 +506,15 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
       link: true,
       updatedAt: true,
     },
+    take: 50, // 1回あたりの最大回収件数を50件に制限
+    orderBy: {
+      updatedAt: 'asc', // 古いものから優先回収
+    },
   })
 
   if (orphanedItems.length === 0) {
     console.log('No orphaned QUEUED items found.')
-    return { recoveredCount: 0 }
+    return { recoveredCount: 0, errors: [] as string[] }
   }
 
   console.log(
@@ -502,63 +522,83 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5) {
   )
 
   const itemsToEnqueue = orphanedItems.map((item) => ({ id: item.id, link: item.link }))
-  const enqueueResult = await enqueueImageFetch(itemsToEnqueue)
+  const enqueueResult = await enqueueImageFetch(itemsToEnqueue, { deadline: options?.deadline })
 
   console.log(
     `Recovery completed: ${enqueueResult.successCount} re-enqueued successfully, ${enqueueResult.failureCount} failed.`
   )
 
+  const errors: string[] = []
   if (enqueueResult.failureCount > 0) {
+    const queueError = `Queue enqueue failed: ${enqueueResult.failedIds.join(', ')}`
     console.warn(`Failed to re-enqueue orphaned items with IDs: ${enqueueResult.failedIds.join(', ')}`)
+    errors.push(queueError)
   }
 
-  return { recoveredCount: enqueueResult.successCount }
+  return { recoveredCount: enqueueResult.successCount, errors }
+}
+
+export interface SyncNewsResult {
+  addedCount: number;
+  recoveredCount: number;
+  errors: string[];
 }
 
 /**
  * RSSから最新ニュースを取得し、データベースに保存する一連の処理を実行します（Cronから呼び出す用）。
+ * RSSフェーズとSweeperフェーズのエラーを追跡し、結果を返却します。
  */
-export async function syncNews() {
+export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise<SyncNewsResult> {
+  const deadline = options?.deadlineBudgetMs ? Date.now() + options.deadlineBudgetMs : Date.now() + 50000 // デフォルト50秒予算
   console.log('Starting RSS feed synchronization...')
-  const latestItems = await fetchRssFeeds()
+  let addedCount = 0
+  const errors: string[] = []
 
-  if (latestItems.length === 0) {
-    console.log('No items retrieved from RSS feeds.')
-    return { count: 0 }
+  // 1. RSS取得と新着記事の保存（エラーがあっても記録してSweeperへ進む）
+  try {
+    const latestItems = await fetchRssFeeds()
+
+    if (latestItems.length > 0) {
+      const links = latestItems.map((item) => item.link).filter(Boolean)
+      const existingItems = await prisma.newsItem.findMany({
+        where: { link: { in: links } },
+        select: { link: true },
+      })
+      const existingLinks = new Set(existingItems.map((item) => item.link))
+      const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
+
+      if (newItems.length > 0) {
+        console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
+        // 【重要】saveNewsToDb に全体締切 options を渡す
+        const result = await saveNewsToDb(newItems, {
+          enqueueOptions: { deadline },
+        })
+        addedCount = result.count
+        errors.push(...result.errors)
+        console.log(`Synchronization complete. Saved ${result.count} new news items.`)
+      } else {
+        console.log('All retrieved items already exist in the database.')
+      }
+    } else {
+      console.log('No items retrieved from RSS feeds.')
+    }
+  } catch (rssError) {
+    console.error('Error during RSS fetch / save phase:', rssError)
+    errors.push(`RSS/Save Phase Error: ${rssError instanceof Error ? rssError.message : String(rssError)}`)
   }
 
-  // RSSから取得したアイテムのリンク一覧を抽出
-  const links = latestItems.map((item) => item.link).filter(Boolean)
-
-  // DBに既に存在するリンクを取得（重複を避けるためピンポイントで検索）
-  const existingItems = await prisma.newsItem.findMany({
-    where: {
-      link: {
-        in: links,
-      },
-    },
-    select: {
-      link: true,
-    },
-  })
-
-  const existingLinks = new Set(existingItems.map((item) => item.link))
-
-  // DBに存在しない新規アイテムのみをフィルタリング
-  const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
-
-  if (newItems.length === 0) {
-    console.log('All retrieved items already exist in the database.')
-  } else {
-    console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
-    const result = await saveNewsToDb(newItems)
-    console.log(`Synchronization complete. Saved ${result.count} new news items.`)
+  // 2. RSSの成否に関わらず、孤立キューの回収 Sweeper を必ず実行
+  let recoveredCount = 0
+  try {
+    console.log('Running orphaned QUEUED items recovery...')
+    const recoveryResult = await recoverOrphanedQueuedItems(5, { deadline })
+    recoveredCount = recoveryResult.recoveredCount
+    errors.push(...recoveryResult.errors)
+    console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`)
+  } catch (sweeperError) {
+    console.error('Error during orphaned QUEUED items recovery:', sweeperError)
+    errors.push(`Sweeper Phase Error: ${sweeperError instanceof Error ? sweeperError.message : String(sweeperError)}`)
   }
 
-  // 孤立したQUEUED状態の記事を回収
-  console.log('Running orphaned QUEUED items recovery...')
-  const recoveryResult = await recoverOrphanedQueuedItems()
-  console.log(`Recovery complete. Re-enqueued ${recoveryResult.recoveredCount} orphaned items.`)
-
-  return { count: newItems.length }
+  return { addedCount, recoveredCount, errors }
 }
