@@ -24,24 +24,27 @@ RSSの取得、DB保存、Vercel Queues への投入処理自体は実行され�
 
 ---
 
-## 2. 根本原因の詳細分析（Codex レビュー反映版）
+## 2. 根本原因の詳細分析（Codex レビュー最新反映版）
 
 ### 2.1 RSS 取得処理におけるタイムアウトの欠如 (`lib/news.ts`)
 - `fetchRssFeeds()` 内の `fetch(source.url, fetchOptions)` にタイムアウトが設定されていませんでした。
 - 登録されている 32 件の外部 RSS フィードのうち、1 件でもレスポンスが遅延（ハング）または TCP 接続が保留されると、Node.js の `fetch` は長時間待機し続け、`Promise.allSettled` 全体がブロックされます。
 
-### 2.2 Queue 送信におけるタイムアウト・全体締切の欠如 (`lib/queue.ts`)
-- `enqueueImageFetch` 内で 10 件ずつのチャンク分割を行っていても、`Promise.allSettled` はチャンク内の全 Promise が確定するまで待ち続けます。
+### 2.2 Queue 送信におけるタイムアウト・個別ハング (`lib/queue.ts`)
+- `enqueueImageFetch` 内でチャンク分割を行っていても、`Promise.allSettled` はチャンク内の全 Promise が確定するまで待ち続けます。
 - チャンク内の 1 件でも `send()` がネットワーク障害で応答待ちになると、後続チャンクが一切開始されず、Vercel Function の実行時間（60秒）上限までハングします。
-- `maxDuration = 60` はプラットフォームの強制終了上限に過ぎず、プロセスが強制終了されるとエラーログや未送信IDの記録もできずに 504/500 になります。
 
-### 2.3 RSS 取得全件失敗時における孤立キュー回収 Sweeper のスキップバグ (`lib/news.ts`)
-- `syncNews()` 内で `if (latestItems.length === 0) return { count: 0 }` という早期 return が存在します。
-- RSS ソースが障害やタイムアウトで全件失敗して `latestItems` が空配列になった場合、後続の `recoverOrphanedQueuedItems()` に到達しません。
-- これにより、「RSS障害が発生している期間中、過去の孤立キュー回収も完全に停止する」という連鎖障害が発生します。
+### 2.3 新規記事の Queue 送信における全体締切（`deadline`）の未伝播バグ (`lib/news.ts`) 【P1】
+- `syncNews()` で全体締切 `deadline = Date.now() + 50000` を計算しているものの、`saveNewsToDb(newItems)` 呼び出し時に `enqueueOptions` が渡されていませんでした。
+- その結果、新規記事の Queue 投入時には `enqueueImageFetch` の締切制御が働かず、大量記事（例: 100〜200件）取得時に 50 秒を超えて送信を続け、Vercel の 60 秒プラットフォーム制限で強制終了してしまいます。
 
-### 2.4 孤立記事回収 (`recoverOrphanedQueuedItems`) の取得件数無制限
-- `recoverOrphanedQueuedItems` 内の `prisma.newsItem.findMany` に `take`（取得件数上限）が設定されておらず、過去の滞留データが大量に存在する場合に通信数と処理時間を圧迫します。
+### 2.4 RSS 取得全件失敗時における孤立キュー回収 Sweeper のスキップバグ (`lib/news.ts`) 【P1】
+- `syncNews()` 内で `if (latestItems.length === 0) return { count: 0 }` という早期 return が存在しました。
+- RSS ソースが障害やタイムアウトで全件失敗して `latestItems` が空配列になった場合、後続の `recoverOrphanedQueuedItems()` に到達しませんでした。
+
+### 2.5 エラーを握りつぶして 200 OK を返却するサイレント障害バグ (`lib/news.ts`, `app/api/cron/fetch-news/route.ts`) 【P1〜P2】
+- `syncNews()` 内で RSS/DB 保存フェーズや Sweeper フェーズのエラーを `try-catch` でログ出力するのみで握りつぶし、常に通常オブジェクトを返却していました。
+- これにより、DB 接続断、トランザクション失敗、DB クエリ例外などの致命的障害時でも Route Handler が `status: 200` (`success: true`) を返し、監視上は Cron 成功に見えてデータ保存が失敗している深刻なサイレント障害を引き起こします。
 
 ---
 
@@ -49,31 +52,29 @@ RSSの取得、DB保存、Vercel Queues への投入処理自体は実行され�
 
 ```mermaid
 flowchart TD
-    Start["Cron実行開始 (全体予算: 50秒)"] --> RSS["RSS取得 (各8秒タイムアウト)"]
+    Start["Cron実行開始 (全体予算: 50秒)"] --> RSS["1. RSS取得 (各8秒タイムアウト)"]
     RSS --> DB["DB一括保存 (Status: QUEUED)"]
-    DB --> EnqueueLoop{"Queue送信 (10件チャンク)\n※残り時間チェック"}
+    DB --> EnqueueNew{"2. 新規記事Queue送信\n※全体締切(deadline)を伝播"}
     
-    EnqueueLoop -->|"時間あり & 各5sタイムアウト"| Send["send() + idempotencyKey"]
-    Send -->|"成功"| MarkSuccess["送信完了"]
-    Send -->|"失敗/タイムアウト"| KeepQueued["QUEUEDのまま残す"]
+    EnqueueNew -->|"時間内"| Send["send() + idempotencyKey (各5s)"]
+    EnqueueNew -->|"締切到達"| StopNew["残りをQUEUEDのまま打ち切り"]
     
-    EnqueueLoop -->|"全体締切(50秒)到達"| StopGraceful["残りをQUEUEDのまま打ち切り"]
-    MarkSuccess --> NextChunk["次チャンクへ"]
-    KeepQueued --> NextChunk
-    NextChunk --> EnqueueLoop
+    Send --> Sweeper["3. Sweeper回収 (上限50件 & deadline伝播)"]
+    StopNew --> Sweeper
     
-    StopGraceful --> Sweeper["Sweeper回収 (上限50件)"]
-    NextChunk -->|"全件完了"| Sweeper
-    Sweeper --> Response200["200 OK で安全終了\n(次回Sweeperが自動回収)"]
+    Sweeper --> CheckError{"フェーズ中にエラーはあったか？"}
+    CheckError -->|"エラーあり"| Response500["500 Internal Server Error\n(エラー配列 & 処理件数を返却)"]
+    CheckError -->|"全フェーズ正常"| Response200["200 OK\n(addedCount & recoveredCount)"]
 ```
 
 | 項目 | 対策内容 | 期待効果 |
 | :--- | :--- | :--- |
 | **RSS Fetch タイムアウト** | `fetch(source.url, { signal: AbortSignal.timeout(8000) })` を導入 | 遅延・停止している外部フィードを最大 8 秒で確実に切り離し、Cron 全体の待機を防止 |
 | **Queue 個別送信タイムアウト** | `sendWithTimeout(send(...), 5000)` により各 `send()` を最大 5 秒に制限 | 1 件の送信ハングによるチャンク停止・Function 全体ハングを防止 |
-| **Queue 冪等性キー付与** | `idempotencyKey: `image-fetch-${item.id}`` を指定 | 呼び出し側タイムアウト後に裏で Queue 受理されていた場合の二重処理を Vercel Queue 側で自動排除 |
-| **Cron 全体締切・予算管理** | Cron 開始から 50 秒（または deadline）で Queue 送信を安全に切り上げ | Vercel の 60 秒強制終了前に 200 OK で正常終了させ、未送信記事は次回 Sweeper に委ねる |
+| **Queue 冪等性キー付与** | `idempotencyKey: `image-fetch-${item.id}`` を指定 | タイムアウト後に裏で Queue 受理されていた場合の二重処理を Vercel Queue 側で自動重複排除 |
+| **新規記事への全体締切伝播** | `saveNewsToDb(newItems, { enqueueOptions: { deadline } })` を渡す | 新規記事・Sweeper の両方で 50 秒予算を守り、60 秒強制終了を確実に回避 |
 | **Sweeper 常時実行化** | `syncNews` で RSS の結果に関わらず `recoverOrphanedQueuedItems` を必ず実行 | RSS 全件障害時でも孤立キュー回収が継続稼働する |
+| **エラー情報の集約と 500 返却** | `syncNews` が `errors: string[]` を集約し、エラー時は Route Handler が 500 を返却 | DB 障害等のサイレント失敗を防止し、Vercel Observability で正しく検知 |
 | **リカバリ件数の制限** | `recoverOrphanedQueuedItems` に `take: 50` の上限を追加 | 1 回の Cron 実行におけるリカバリ処理負荷を一定範囲に抑制 |
 | **maxDuration の明示** | `app/api/cron/fetch-news/route.ts` に `export const maxDuration = 60;` を追加 | Vercel Serverless Function の実行許容時間を確実に 60 秒に設定 |
 
@@ -83,7 +84,6 @@ flowchart TD
 
 ### 4.1 `lib/queue.ts`
 
-#### タイムアウト付き送信 & 冪等性キー & 締切制御
 ```typescript
 import { send } from '@vercel/queue';
 
@@ -212,21 +212,59 @@ export async function enqueueImageFetch(
 
 ### 4.2 `lib/news.ts`
 
-#### (1) `fetchRssFeeds` へのタイムアウト追加
 ```typescript
-const res = await fetch(source.url, {
-  ...fetchOptions,
-  signal: AbortSignal.timeout(8000), // 8秒でタイムアウト
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  },
-})
-```
+import { EnqueueOptions, enqueueImageFetch } from './queue';
 
-#### (2) `recoverOrphanedQueuedItems` への上限追加
-```typescript
-export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, options?: { deadline?: number }) {
-  const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000)
+export interface SyncNewsResult {
+  addedCount: number;
+  recoveredCount: number;
+  errors: string[];
+}
+
+/**
+ * 取得したニュース項目をデータベースに一括保存し、Queueへ投入します。
+ */
+export async function saveNewsToDb(
+  items: FeedItem[],
+  options?: { enqueueOptions?: EnqueueOptions }
+) {
+  if (items.length === 0) return { count: 0 };
+
+  const data = items.map((item) => {
+    // ... 既存のマッピング処理
+  });
+
+  const result = await prisma.$transaction(async (tx) => {
+    // ... 既存の NewsItem と NewsItemCategory 保存処理
+    return { count: createResult.count, queuedArticles };
+  });
+
+  if (result.count === 0) return { count: 0 };
+
+  // トランザクション完了後、Vercel Queues へ送信（全体締切オプションを必ず伝播）
+  if (result.queuedArticles.length > 0) {
+    const enqueueResult = await enqueueImageFetch(
+      result.queuedArticles,
+      options?.enqueueOptions
+    );
+    if (enqueueResult.failureCount > 0) {
+      console.warn(
+        `Queue enqueue completed with ${enqueueResult.successCount} successes and ${enqueueResult.failureCount} failures. Failed IDs: ${enqueueResult.failedIds.join(', ')}`
+      );
+    }
+  }
+
+  return { count: result.count };
+}
+
+/**
+ * 孤立したQUEUED状態の記事を回収し、Queueへ再投入します。
+ */
+export async function recoverOrphanedQueuedItems(
+  thresholdMinutes: number = 5,
+  options?: { deadline?: number }
+) {
+  const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000);
 
   const orphanedItems = await prisma.newsItem.findMany({
     where: {
@@ -244,71 +282,78 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, o
     orderBy: {
       updatedAt: 'asc', // 古いものから優先回収
     },
-  })
+  });
 
   if (orphanedItems.length === 0) {
-    console.log('No orphaned QUEUED items found.')
-    return { recoveredCount: 0 }
+    console.log('No orphaned QUEUED items found.');
+    return { recoveredCount: 0 };
   }
 
   console.log(
     `Found ${orphanedItems.length} orphaned QUEUED items. Attempting to re-enqueue...`
-  )
+  );
 
-  const itemsToEnqueue = orphanedItems.map((item) => ({ id: item.id, link: item.link }))
-  const enqueueResult = await enqueueImageFetch(itemsToEnqueue, { deadline: options?.deadline })
+  const itemsToEnqueue = orphanedItems.map((item) => ({ id: item.id, link: item.link }));
+  const enqueueResult = await enqueueImageFetch(itemsToEnqueue, { deadline: options?.deadline });
 
-  return { recoveredCount: enqueueResult.successCount }
+  return { recoveredCount: enqueueResult.successCount };
 }
-```
 
-#### (3) `syncNews` の Sweeper 常時実行化 & 締切管理
-```typescript
-export async function syncNews(options?: { deadlineBudgetMs?: number }) {
-  const deadline = options?.deadlineBudgetMs ? Date.now() + options.deadlineBudgetMs : Date.now() + 50000 // デフォルト50秒予算
-  console.log('Starting RSS feed synchronization...')
-  let addedCount = 0
+/**
+ * RSSから最新ニュースを取得し、データベースに保存する一連の処理を実行します。
+ * RSSフェーズとSweeperフェーズのエラーを追跡し、結果を返却します。
+ */
+export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise<SyncNewsResult> {
+  const deadline = options?.deadlineBudgetMs ? Date.now() + options.deadlineBudgetMs : Date.now() + 50000;
+  console.log('Starting RSS feed synchronization...');
+  let addedCount = 0;
+  const errors: string[] = [];
 
-  // 1. RSS取得と新着記事の保存（エラー時もSweeperへ継続）
+  // 1. RSS取得と新着記事の保存（エラーがあっても記録してSweeperへ進む）
   try {
-    const latestItems = await fetchRssFeeds()
+    const latestItems = await fetchRssFeeds();
 
     if (latestItems.length > 0) {
-      const links = latestItems.map((item) => item.link).filter(Boolean)
+      const links = latestItems.map((item) => item.link).filter(Boolean);
       const existingItems = await prisma.newsItem.findMany({
         where: { link: { in: links } },
         select: { link: true },
-      })
-      const existingLinks = new Set(existingItems.map((item) => item.link))
-      const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
+      });
+      const existingLinks = new Set(existingItems.map((item) => item.link));
+      const newItems = latestItems.filter((item) => !existingLinks.has(item.link));
 
       if (newItems.length > 0) {
-        console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
-        const result = await saveNewsToDb(newItems)
-        addedCount = result.count
-        console.log(`Synchronization complete. Saved ${result.count} new news items.`)
+        console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`);
+        // 【重要】saveNewsToDb に全体締切 options を渡す
+        const result = await saveNewsToDb(newItems, {
+          enqueueOptions: { deadline },
+        });
+        addedCount = result.count;
+        console.log(`Synchronization complete. Saved ${result.count} new news items.`);
       } else {
-        console.log('All retrieved items already exist in the database.')
+        console.log('All retrieved items already exist in the database.');
       }
     } else {
-      console.log('No items retrieved from RSS feeds.')
+      console.log('No items retrieved from RSS feeds.');
     }
   } catch (rssError) {
-    console.error('Error during RSS fetch / save phase:', rssError)
+    console.error('Error during RSS fetch / save phase:', rssError);
+    errors.push(`RSS/Save Phase Error: ${rssError instanceof Error ? rssError.message : String(rssError)}`);
   }
 
   // 2. RSSの成否に関わらず、孤立キューの回収 Sweeper を必ず実行
-  let recoveredCount = 0
+  let recoveredCount = 0;
   try {
-    console.log('Running orphaned QUEUED items recovery...')
-    const recoveryResult = await recoverOrphanedQueuedItems(5, { deadline })
-    recoveredCount = recoveryResult.recoveredCount
-    console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`)
+    console.log('Running orphaned QUEUED items recovery...');
+    const recoveryResult = await recoverOrphanedQueuedItems(5, { deadline });
+    recoveredCount = recoveryResult.recoveredCount;
+    console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`);
   } catch (sweeperError) {
-    console.error('Error during orphaned QUEUED items recovery:', sweeperError)
+    console.error('Error during orphaned QUEUED items recovery:', sweeperError);
+    errors.push(`Sweeper Phase Error: ${sweeperError instanceof Error ? sweeperError.message : String(sweeperError)}`);
   }
 
-  return { addedCount, recoveredCount }
+  return { addedCount, recoveredCount, errors };
 }
 ```
 
@@ -342,6 +387,21 @@ export async function GET(request: NextRequest) {
     // 50秒の内部タイムバジェットを指定して実行
     const result = await syncNews({ deadlineBudgetMs: 50000 })
 
+    // エラーが記録されている場合は 500 を返却してサイレント障害を防止
+    if (result.errors.length > 0) {
+      console.error(`Cron Job completed with ${result.errors.length} error(s):`, result.errors)
+      return Response.json(
+        {
+          success: false,
+          message: 'News sync completed with errors.',
+          addedCount: result.addedCount,
+          recoveredCount: result.recoveredCount,
+          errors: result.errors,
+        },
+        { status: 500 }
+      )
+    }
+
     return Response.json({
       success: true,
       message: `News feed synchronized successfully.`,
@@ -349,7 +409,7 @@ export async function GET(request: NextRequest) {
       recoveredCount: result.recoveredCount,
     })
   } catch (error) {
-    console.error('Error in Cron Job /api/cron/fetch-news:', error)
+    console.error('Unhandled Error in Cron Job /api/cron/fetch-news:', error)
     return Response.json(
       { error: 'Internal Server Error', details: String(error) },
       { status: 500 }
@@ -362,29 +422,21 @@ export async function GET(request: NextRequest) {
 
 ## 5. Devin 向けステップ別実装手順
 
-### Step 1: `lib/queue.ts` の改修
-1. `sendWithTimeout` ラッパー関数を実装（個別 `timeoutMs: 5000`）。
-2. `send` 呼び出し時に `idempotencyKey: `image-fetch-${item.id}`` を付与。
-3. `enqueueOptions`（`deadline`）を受け取り、チャンクループ前に締切チェックを行って超過時は未送信記事を `QUEUED` のまま残す制御を追加。
+### Step 1: `lib/news.ts` の改修
+1. `saveNewsToDb` の引数に `options?: { enqueueOptions?: EnqueueOptions }` を追加し、内部の `enqueueImageFetch(result.queuedArticles, options?.enqueueOptions)` に伝播させる。
+2. `SyncNewsResult` インターフェース（`addedCount`, `recoveredCount`, `errors: string[]`）を定義。
+3. `syncNews` 内で `saveNewsToDb(newItems, { enqueueOptions: { deadline } })` を呼び出す。
+4. `syncNews` の RSS/DB 保存フェーズおよび Sweeper フェーズでエラーが発生した場合、`errors.push(...)` で集約して返却する。
 
-### Step 2: `lib/news.ts` の改修
-1. `fetchRssFeeds` に `AbortSignal.timeout(8000)` および `User-Agent` を設定。
-2. `syncNews` の `if (latestItems.length === 0) return` による早期リターンを削除し、RSSフェーズとSweeperフェーズを独立した `try-catch` で常時実行化。
-3. `syncNews` の戻り値を `{ addedCount: number; recoveredCount: number }` に更新。
-4. `recoverOrphanedQueuedItems` に `take: 50`、`orderBy: { updatedAt: 'asc' }`、`deadline` オプション受け渡しを追加。
+### Step 2: `app/api/cron/fetch-news/route.ts` の改修
+1. `result.errors.length > 0` の判定を追加し、エラーがある場合は `status: 500`（`success: false`）で詳細エラー配列を返すように修正。
 
-### Step 3: `app/api/cron/fetch-news/route.ts` の改修
-1. `export const maxDuration = 60;` を追加。
-2. `syncNews({ deadlineBudgetMs: 50000 })` を呼び出し、レスポンスに `addedCount`, `recoveredCount` を含めて返却。
-
-### Step 4: 単体テストの追加と更新
-1. `lib/__tests__/queue.test.ts`:
-   - `sendWithTimeout` によるタイムアウト発生時のテスト
-   - `idempotencyKey` が付与されていることの検証
-   - `deadline` 超過時に残りのアイテムが中断されるテスト
-2. `lib/__tests__/news.test.ts`:
-   - `fetchRssFeeds` が空配列を返した場合でも `recoverOrphanedQueuedItems` が実行されるテスト
-   - `fetchRssFeeds` のタイムアウトテスト
+### Step 3: 単体テストの追加と更新
+1. `lib/__tests__/news.test.ts`:
+   - `saveNewsToDb` が `enqueueOptions`（`deadline`）を正しく `enqueueImageFetch` に渡すことの検証テスト。
+   - `syncNews` において RSS フェーズで例外が発生した際、`errors` 配列に記録され、Sweeper が実行されることの検証テスト。
+2. `lib/__tests__/queue.test.ts`:
+   - 既存のタイムアウト、idempotencyKey、deadline 動作テストの確認。
 
 ---
 

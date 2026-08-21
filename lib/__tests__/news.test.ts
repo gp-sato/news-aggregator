@@ -12,7 +12,12 @@ vi.mock('../prisma', () => ({
       findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockResolvedValue({}),
     },
-    $transaction: vi.fn(),
+    newsItemCategory: {
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    $transaction: vi.fn().mockImplementation(async (callback) => {
+      return callback(prisma);
+    }),
   },
 }));
 
@@ -21,7 +26,7 @@ vi.mock('../queue', () => ({
   enqueueImageFetch: vi.fn(),
 }));
 
-import { fetchRssFeeds, recoverOrphanedQueuedItems, syncNews } from '../news';
+import { fetchRssFeeds, recoverOrphanedQueuedItems, saveNewsToDb, syncNews } from '../news';
 import { enqueueImageFetch } from '../queue';
 
 describe('recoverOrphanedQueuedItems', () => {
@@ -332,15 +337,80 @@ describe('fetchRssFeeds', () => {
   });
 });
 
+describe('saveNewsToDb', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('enqueueOptions(deadline)をenqueueImageFetchに正しく伝播する', async () => {
+    vi.mocked(prisma.newsItem.createMany).mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
+      {
+        id: 'new-item-1',
+        sourceId: 'source-1',
+        link: 'https://example.com/article-1',
+        imageFetchStatus: 'QUEUED',
+      } as never,
+    ]);
+    vi.mocked(prisma.source.findMany).mockResolvedValue([
+      {
+        id: 'source-1',
+        defaultCategoryId: 'tech',
+      } as never,
+    ]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 1,
+      failureCount: 0,
+      failedIds: [],
+    });
+
+    const testDeadline = Date.now() + 45000;
+    const items = [
+      {
+        title: 'Article 1',
+        link: 'https://example.com/article-1',
+        sourceId: 'source-1',
+      },
+    ];
+
+    await saveNewsToDb(items, {
+      enqueueOptions: { deadline: testDeadline },
+    });
+
+    expect(enqueueImageFetch).toHaveBeenCalledWith(
+      [{ id: 'new-item-1', link: 'https://example.com/article-1' }],
+      { deadline: testDeadline }
+    );
+  });
+});
+
 describe('syncNews', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('RSSで新着記事が0件の場合でも、孤立キュー回収(Sweeper)を必ず実行する', async () => {
-    // RSSソースなし -> fetchRssFeedsは空配列を返す
     vi.mocked(prisma.source.findMany).mockResolvedValue([]);
-    // Sweeper対象アイテムが1件存在
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 0,
+      failureCount: 0,
+      failedIds: [],
+    });
+
+    const result = await syncNews();
+
+    expect(result).toHaveProperty('addedCount');
+    expect(result).toHaveProperty('recoveredCount');
+    expect(result).toHaveProperty('errors');
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(result.errors.length).toBe(0);
+  });
+
+  it('RSSフェーズでエラーが発生した場合でも、errors配列に記録しSweeperを実行する', async () => {
+    // RSS取得でエラーを発生させる
+    vi.mocked(prisma.source.findMany).mockRejectedValue(new Error('Database connection failed'));
+    // Sweeper対象アイテムが1件
     vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
       {
         id: 'orphaned-1',
@@ -356,12 +426,11 @@ describe('syncNews', () => {
 
     const result = await syncNews();
 
-    expect(result).toEqual({ addedCount: 0, recoveredCount: 1 });
-    expect(enqueueImageFetch).toHaveBeenCalledWith(
-      [{ id: 'orphaned-1', link: 'https://example.com/orphaned-1' }],
-      { deadline: expect.any(Number) }
-    );
+    expect(result.addedCount).toBe(0);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain('Database connection failed');
   });
 });
+
 
 

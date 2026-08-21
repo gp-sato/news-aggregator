@@ -1,7 +1,7 @@
 import Parser from 'rss-parser'
 import { prisma } from './prisma'
 import { ImageFetchStatus } from '@prisma/client'
-import { enqueueImageFetch } from './queue'
+import { enqueueImageFetch, EnqueueOptions } from './queue'
 
 export interface FeedItem {
   guid?: string
@@ -370,7 +370,7 @@ export async function getNewsFromDb(params: {
  * 取得したニュース項目をデータベースに一括保存します。
  * 重複するURL（link）の記事は自動的にスキップされます。
  */
-export async function saveNewsToDb(items: FeedItem[]) {
+export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions?: EnqueueOptions }) {
   if (items.length === 0) return { count: 0 }
 
   const data = items.map((item) => {
@@ -469,9 +469,9 @@ export async function saveNewsToDb(items: FeedItem[]) {
 
   if (result.count === 0) return { count: 0 }
 
-  // トランザクション完了後、Vercel Queues へ送信
+  // トランザクション完了後、Vercel Queues へ送信（全体締切オプションを必ず伝播）
   if (result.queuedArticles.length > 0) {
-    const enqueueResult = await enqueueImageFetch(result.queuedArticles)
+    const enqueueResult = await enqueueImageFetch(result.queuedArticles, options?.enqueueOptions)
     if (enqueueResult.failureCount > 0) {
       console.warn(
         `Queue enqueue completed with ${enqueueResult.successCount} successes and ${enqueueResult.failureCount} failures. Failed IDs: ${enqueueResult.failedIds.join(', ')}`
@@ -531,15 +531,23 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, o
   return { recoveredCount: enqueueResult.successCount }
 }
 
+export interface SyncNewsResult {
+  addedCount: number;
+  recoveredCount: number;
+  errors: string[];
+}
+
 /**
  * RSSから最新ニュースを取得し、データベースに保存する一連の処理を実行します（Cronから呼び出す用）。
+ * RSSフェーズとSweeperフェーズのエラーを追跡し、結果を返却します。
  */
-export async function syncNews(options?: { deadlineBudgetMs?: number }) {
+export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise<SyncNewsResult> {
   const deadline = options?.deadlineBudgetMs ? Date.now() + options.deadlineBudgetMs : Date.now() + 50000 // デフォルト50秒予算
   console.log('Starting RSS feed synchronization...')
   let addedCount = 0
+  const errors: string[] = []
 
-  // 1. RSS取得と新着記事の保存（エラー時もSweeperへ継続）
+  // 1. RSS取得と新着記事の保存（エラーがあっても記録してSweeperへ進む）
   try {
     const latestItems = await fetchRssFeeds()
 
@@ -554,7 +562,10 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }) {
 
       if (newItems.length > 0) {
         console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
-        const result = await saveNewsToDb(newItems)
+        // 【重要】saveNewsToDb に全体締切 options を渡す
+        const result = await saveNewsToDb(newItems, {
+          enqueueOptions: { deadline },
+        })
         addedCount = result.count
         console.log(`Synchronization complete. Saved ${result.count} new news items.`)
       } else {
@@ -565,6 +576,7 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }) {
     }
   } catch (rssError) {
     console.error('Error during RSS fetch / save phase:', rssError)
+    errors.push(`RSS/Save Phase Error: ${rssError instanceof Error ? rssError.message : String(rssError)}`)
   }
 
   // 2. RSSの成否に関わらず、孤立キューの回収 Sweeper を必ず実行
@@ -576,7 +588,8 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }) {
     console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`)
   } catch (sweeperError) {
     console.error('Error during orphaned QUEUED items recovery:', sweeperError)
+    errors.push(`Sweeper Phase Error: ${sweeperError instanceof Error ? sweeperError.message : String(sweeperError)}`)
   }
 
-  return { addedCount, recoveredCount }
+  return { addedCount, recoveredCount, errors }
 }
