@@ -1,6 +1,6 @@
 import Parser from 'rss-parser'
 import { prisma } from './prisma'
-import { ImageFetchStatus } from '@prisma/client'
+import { ImageFetchStatus, FeedSyncStatus } from '@prisma/client'
 import { enqueueImageFetch, EnqueueOptions } from './queue'
 
 export interface FeedItem {
@@ -24,6 +24,39 @@ export interface FeedItem {
   mediaThumbnail?: any
   hatenaImageUrl?: string
   contentEncoded?: string
+}
+
+export interface FeedFetchResult {
+  sourceId: string
+  sourceName: string
+  sourceUrl: string
+  status: FeedSyncStatus
+  httpStatus?: number
+  durationMs: number
+  itemsFound: number
+  itemsCreated?: number
+  errorCode?: string
+  errorMessage?: string
+}
+
+export type SyncErrorType = 'phase' | 'queue'
+
+export interface SyncErrorDetail {
+  type: SyncErrorType
+  message: string
+}
+
+/**
+ * HTTPエラー情報を含むカスタムエラー型
+ */
+class HttpError extends Error {
+  httpStatus?: number
+
+  constructor(message: string, httpStatus?: number) {
+    super(message)
+    this.name = 'HttpError'
+    this.httpStatus = httpStatus
+  }
 }
 
 /**
@@ -213,7 +246,7 @@ export async function updateImageStatus(
 /**
  * 外部のRSSソースから最新のニュース記事を取得します。
  */
-export async function fetchRssFeeds(): Promise<FeedItem[]> {
+export async function fetchRssFeeds(): Promise<{ items: FeedItem[]; feedResults: FeedFetchResult[] }> {
   const parser = new Parser({
     customFields: {
       item: [
@@ -223,13 +256,14 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
       ]
     }
   })
-  
+
   // データベースから有効なソースを取得
   const dbSources = await prisma.source.findMany({
     where: { enabled: true },
   })
 
   const feedPromises = dbSources.map(async (source) => {
+    const startTime = Date.now()
     try {
       // 外部サーバーへの負荷軽減とアクセスの高速化のため、本番環境ではNext.jsのData Cache（10分間再検証）を適用してXMLを取得します。
       // 開発環境では常に最新データを取得するため、キャッシュを無効にします。
@@ -244,7 +278,7 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         },
       })
       if (!res.ok) {
-        throw new Error(`Failed to fetch XML. Status: ${res.status}`)
+        throw new HttpError(`Failed to fetch XML. Status: ${res.status}`, res.status)
       }
       const xmlString = await res.text()
       const feed = await parser.parseString(xmlString)
@@ -255,8 +289,10 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         data: { lastFetchedAt: new Date(), lastError: null },
       }).catch((err) => console.error(`Failed to update lastFetchedAt for source ${source.id}:`, err))
 
+      const durationMs = Date.now() - startTime
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return feed.items.map((item: any) => ({
+      const items = feed.items.map((item: any) => ({
         guid: item.guid,
         title: item.title || '',
         link: item.link || '',
@@ -276,7 +312,22 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         hatenaImageUrl: item.hatenaImageUrl,
         contentEncoded: item.contentEncoded,
       }))
+
+      const feedResult: FeedFetchResult = {
+        sourceId: source.id,
+        sourceName: source.name,
+        sourceUrl: source.url,
+        status: FeedSyncStatus.SUCCESS,
+        httpStatus: res.status,
+        durationMs,
+        itemsFound: items.length,
+        itemsCreated: 0, // Will be updated after saving to DB
+      }
+
+      return { items, feedResult }
     } catch (error) {
+      const durationMs = Date.now() - startTime
+
       // タイムアウトまたはネットワークエラーの場合は安全にスキップ
       if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
         console.error(`RSS fetch timeout for ${source.name}:`, error)
@@ -290,28 +341,57 @@ export async function fetchRssFeeds(): Promise<FeedItem[]> {
         data: { lastError: String(error) },
       }).catch((err) => console.error(`Failed to update lastError for source ${source.id}:`, err))
 
-      return []
+      const isTimeout = error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
+      const httpStatus = error instanceof HttpError ? error.httpStatus : undefined
+      const feedResult: FeedFetchResult = {
+        sourceId: source.id,
+        sourceName: source.name,
+        sourceUrl: source.url,
+        status: isTimeout ? FeedSyncStatus.TIMEOUT : FeedSyncStatus.FAILED,
+        httpStatus,
+        durationMs,
+        itemsFound: 0,
+        itemsCreated: 0,
+        errorCode: error instanceof Error ? error.name : 'UNKNOWN',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+
+      return { items: [], feedResult }
     }
   })
 
   const results = await Promise.allSettled(feedPromises)
-  const flattenedItems = results
-    .map((result, index) => {
-      if (result.status === 'fulfilled') {
-        return result.value
-      } else {
-        console.error(`Failed to fetch ${dbSources[index].name} feed promise:`, result.reason)
-        return []
-      }
-    })
-    .flat()
+  const allItems: FeedItem[] = []
+  const allFeedResults: FeedFetchResult[] = []
+
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      allItems.push(...result.value.items)
+      allFeedResults.push(result.value.feedResult)
+    } else {
+      console.error(`Failed to fetch ${dbSources[index].name} feed promise:`, result.reason)
+      allFeedResults.push({
+        sourceId: dbSources[index].id,
+        sourceName: dbSources[index].name,
+        sourceUrl: dbSources[index].url,
+        status: FeedSyncStatus.FAILED,
+        durationMs: 0,
+        itemsFound: 0,
+        itemsCreated: 0,
+        errorCode: 'PROMISE_REJECTED',
+        errorMessage: String(result.reason),
+      })
+    }
+  })
 
   // 日付順 (古い順) にソートして返す
-  return flattenedItems.sort((a, b) => {
+  const sortedItems = allItems.sort((a, b) => {
     const dateA = new Date(a.isoDate || 0)
     const dateB = new Date(b.isoDate || 0)
     return dateA.getTime() - dateB.getTime()
   })
+
+  return { items: sortedItems, feedResults: allFeedResults }
 }
 
 /**
@@ -366,12 +446,33 @@ export async function getNewsFromDb(params: {
   })
 }
 
+export interface SaveNewsResult {
+  count: number
+  queuedCount: number
+  queueFailureCount: number
+  sourceCreatedCounts: Record<string, number>
+  errors: string[]
+  errorDetails: SyncErrorDetail[]
+}
+
 /**
  * 取得したニュース項目をデータベースに一括保存します。
  * 重複するURL（link）の記事は自動的にスキップされます。
  */
-export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions?: EnqueueOptions }) {
-  if (items.length === 0) return { count: 0, errors: [] as string[] }
+export async function saveNewsToDb(
+  items: FeedItem[],
+  options?: { enqueueOptions?: EnqueueOptions; jobExecutionId?: string | null }
+): Promise<SaveNewsResult> {
+  if (items.length === 0) {
+    return {
+      count: 0,
+      queuedCount: 0,
+      queueFailureCount: 0,
+      sourceCreatedCounts: {},
+      errors: [],
+      errorDetails: [],
+    }
+  }
 
   const data = items.map((item) => {
     const isGoogle = isGoogleNews(item.link, item.sourceId)
@@ -404,6 +505,7 @@ export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions
       sourceId: item.sourceId,
       imageUrl: extractedUrl,
       imageFetchStatus: status,
+      createdJobExecutionId: options?.jobExecutionId || null,
     }
   })
 
@@ -414,7 +516,9 @@ export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions
       skipDuplicates: true,
     })
 
-    if (createResult.count === 0) return { count: 0, queuedArticles: [] as { id: string; link: string }[] }
+    if (createResult.count === 0) {
+      return { count: 0, queuedArticles: [] as { id: string; link: string }[], sourceCreatedCounts: {} as Record<string, number> }
+    }
 
     // 新規追加された記事を特定してカテゴリリレーションを作成する
     const savedArticles = await tx.newsItem.findMany({
@@ -428,8 +532,17 @@ export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions
         sourceId: true,
         link: true,
         imageFetchStatus: true,
+        createdJobExecutionId: true,
       },
     })
+
+    // 実際に保存された記事のソース別件数を集計
+    const sourceCreatedCounts: Record<string, number> = {}
+    for (const article of savedArticles) {
+      if (!options?.jobExecutionId || article.createdJobExecutionId === options.jobExecutionId) {
+        sourceCreatedCounts[article.sourceId] = (sourceCreatedCounts[article.sourceId] || 0) + 1
+      }
+    }
 
     const dbSources = await tx.source.findMany({
       select: {
@@ -464,26 +577,48 @@ export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions
       .filter((article) => article.imageFetchStatus === 'QUEUED')
       .map((a) => ({ id: a.id, link: a.link }))
 
-    return { count: createResult.count, queuedArticles }
+    return { count: createResult.count, queuedArticles, sourceCreatedCounts }
   })
 
-  if (result.count === 0) return { count: 0, errors: [] as string[] }
+  if (result.count === 0) {
+    return {
+      count: 0,
+      queuedCount: 0,
+      queueFailureCount: 0,
+      sourceCreatedCounts: {},
+      errors: [],
+      errorDetails: [],
+    }
+  }
 
   const errors: string[] = []
+  const errorDetails: SyncErrorDetail[] = []
+  let queuedCount = 0
+  let queueFailureCount = 0
 
   // トランザクション完了後、Vercel Queues へ送信（全体締切オプションを必ず伝播）
   if (result.queuedArticles.length > 0) {
     const enqueueResult = await enqueueImageFetch(result.queuedArticles, options?.enqueueOptions)
+    queuedCount = enqueueResult.successCount
+    queueFailureCount = enqueueResult.failureCount
     if (enqueueResult.failureCount > 0) {
       const queueError = `Queue enqueue failed: ${enqueueResult.failedIds.join(', ')}`
       console.warn(
         `Queue enqueue completed with ${enqueueResult.successCount} successes and ${enqueueResult.failureCount} failures. Failed IDs: ${enqueueResult.failedIds.join(', ')}`
       )
       errors.push(queueError)
+      errorDetails.push({ type: 'queue', message: queueError })
     }
   }
 
-  return { count: result.count, errors }
+  return {
+    count: result.count,
+    queuedCount,
+    queueFailureCount,
+    sourceCreatedCounts: result.sourceCreatedCounts,
+    errors,
+    errorDetails,
+  }
 }
 
 /**
@@ -491,7 +626,17 @@ export async function saveNewsToDb(items: FeedItem[], options?: { enqueueOptions
  * @param thresholdMinutes QUEUED状態とみなす経過時間（分）。デフォルトは5分
  * @param options オプション（deadline等）
  */
-export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, options?: { deadline?: number }) {
+export interface OrphanedQueueRecoveryResult {
+  recoveredCount: number
+  queueFailureCount: number
+  errors: string[]
+  errorDetails: SyncErrorDetail[]
+}
+
+export async function recoverOrphanedQueuedItems(
+  thresholdMinutes: number = 5,
+  options?: { deadline?: number }
+): Promise<OrphanedQueueRecoveryResult> {
   const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000)
 
   const orphanedItems = await prisma.newsItem.findMany({
@@ -514,7 +659,7 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, o
 
   if (orphanedItems.length === 0) {
     console.log('No orphaned QUEUED items found.')
-    return { recoveredCount: 0, errors: [] as string[] }
+    return { recoveredCount: 0, queueFailureCount: 0, errors: [], errorDetails: [] }
   }
 
   console.log(
@@ -529,52 +674,162 @@ export async function recoverOrphanedQueuedItems(thresholdMinutes: number = 5, o
   )
 
   const errors: string[] = []
+  const errorDetails: SyncErrorDetail[] = []
   if (enqueueResult.failureCount > 0) {
     const queueError = `Queue enqueue failed: ${enqueueResult.failedIds.join(', ')}`
     console.warn(`Failed to re-enqueue orphaned items with IDs: ${enqueueResult.failedIds.join(', ')}`)
     errors.push(queueError)
+    errorDetails.push({ type: 'queue', message: queueError })
   }
 
-  return { recoveredCount: enqueueResult.successCount, errors }
+  return {
+    recoveredCount: enqueueResult.successCount,
+    queueFailureCount: enqueueResult.failureCount,
+    errors,
+    errorDetails,
+  }
 }
 
 export interface SyncNewsResult {
   addedCount: number;
   recoveredCount: number;
   errors: string[];
+  itemsFound: number;
+  itemsSkipped: number;
+  feedTotalCount: number;
+  feedSuccessCount: number;
+  feedFailureCount: number;
+  queuedCount: number;
+  queueFailureCount: number;
+  feedResults: FeedFetchResult[];
+  errorDetails: SyncErrorDetail[];
+  errorTypes: {
+    phase: boolean;      // フェーズ障害（DB接続失敗・全Feed失敗など）
+    feed: boolean;       // Feed失敗
+    queue: boolean;      // Queue失敗
+  };
+}
+
+/**
+ * エラーの種別を管理するクラス
+ */
+class ErrorTracker {
+  private readonly errorTypes = {
+    phase: false,
+    feed: false,
+    queue: false,
+  }
+  private readonly errors: SyncErrorDetail[] = []
+
+  addError(error: SyncErrorDetail) {
+    this.errorTypes[error.type] = true
+    this.errors.push(error)
+  }
+
+  addPhaseError(message: string) {
+    this.addError({ type: 'phase', message })
+  }
+
+  markFeedFailure() {
+    this.errorTypes.feed = true
+  }
+
+  addQueueError(message: string) {
+    this.addError({ type: 'queue', message })
+  }
+
+  getErrorTypes() {
+    return { ...this.errorTypes }
+  }
+
+  getErrors(): string[] {
+    return this.errors.map((error) => error.message)
+  }
+
+  getErrorDetails(): SyncErrorDetail[] {
+    return [...this.errors]
+  }
 }
 
 /**
  * RSSから最新ニュースを取得し、データベースに保存する一連の処理を実行します（Cronから呼び出す用）。
  * RSSフェーズとSweeperフェーズのエラーを追跡し、結果を返却します。
  */
-export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise<SyncNewsResult> {
+export async function syncNews(options?: { deadlineBudgetMs?: number; jobExecutionId?: string | null }): Promise<SyncNewsResult> {
   const deadline = options?.deadlineBudgetMs ? Date.now() + options.deadlineBudgetMs : Date.now() + 50000 // デフォルト50秒予算
   console.log('Starting RSS feed synchronization...')
   let addedCount = 0
-  const errors: string[] = []
+  const errorTracker = new ErrorTracker()
+  let itemsFound = 0
+  let itemsSkipped = 0
+  let feedTotalCount = 0
+  let feedSuccessCount = 0
+  let feedFailureCount = 0
+  let queuedCount = 0
+  let queueFailureCount = 0
+  let feedResults: FeedFetchResult[] = []
 
   // 1. RSS取得と新着記事の保存（エラーがあっても記録してSweeperへ進む）
   try {
-    const latestItems = await fetchRssFeeds()
+    const { items: latestItems, feedResults: fetchedFeedResults } = await fetchRssFeeds()
+
+    feedResults = fetchedFeedResults
+    feedTotalCount = feedResults.length
+    feedSuccessCount = feedResults.filter((r) => r.status === FeedSyncStatus.SUCCESS).length
+    feedFailureCount = feedResults.filter((r) => r.status !== FeedSyncStatus.SUCCESS).length
+
+    // Feed失敗があれば記録
+    if (feedFailureCount > 0) {
+      errorTracker.markFeedFailure()
+    }
+
+    // 全Feedが失敗した場合は明示的にエラーとして記録
+    if (feedTotalCount > 0 && feedSuccessCount === 0) {
+      const allFeedsError = `All ${feedTotalCount} feeds failed to sync`
+      console.error(allFeedsError)
+      errorTracker.addPhaseError(allFeedsError)
+    }
 
     if (latestItems.length > 0) {
-      const links = latestItems.map((item) => item.link).filter(Boolean)
+      itemsFound = latestItems.length
+
+      // 同一実行内での重複を事前に除外
+      const uniqueItemsMap = new Map<string, FeedItem>()
+      latestItems.forEach((item) => {
+        if (!uniqueItemsMap.has(item.link)) {
+          uniqueItemsMap.set(item.link, item)
+        }
+      })
+      const uniqueItems = Array.from(uniqueItemsMap.values())
+      const internalDuplicates = latestItems.length - uniqueItems.length
+
+      const links = uniqueItems.map((item) => item.link).filter(Boolean)
       const existingItems = await prisma.newsItem.findMany({
         where: { link: { in: links } },
         select: { link: true },
       })
       const existingLinks = new Set(existingItems.map((item) => item.link))
-      const newItems = latestItems.filter((item) => !existingLinks.has(item.link))
+      const newItems = uniqueItems.filter((item) => !existingLinks.has(item.link))
+      itemsSkipped = internalDuplicates + (uniqueItems.length - newItems.length)
 
       if (newItems.length > 0) {
         console.log(`Fetched ${latestItems.length} items from RSS. Saving ${newItems.length} new items to DB...`)
         // 【重要】saveNewsToDb に全体締切 options を渡す
         const result = await saveNewsToDb(newItems, {
           enqueueOptions: { deadline },
+          jobExecutionId: options?.jobExecutionId,
         })
         addedCount = result.count
-        errors.push(...result.errors)
+        queuedCount += result.queuedCount
+        queueFailureCount += result.queueFailureCount
+        result.errorDetails.forEach((error) => errorTracker.addError(error))
+
+        // 実際のDB保存成功件数を Feed ごとに反映
+        feedResults = feedResults.map((feed) => ({
+          ...feed,
+          itemsCreated: result.sourceCreatedCounts[feed.sourceId] || 0,
+        }))
+
         console.log(`Synchronization complete. Saved ${result.count} new news items.`)
       } else {
         console.log('All retrieved items already exist in the database.')
@@ -584,7 +839,7 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise
     }
   } catch (rssError) {
     console.error('Error during RSS fetch / save phase:', rssError)
-    errors.push(`RSS/Save Phase Error: ${rssError instanceof Error ? rssError.message : String(rssError)}`)
+    errorTracker.addPhaseError(`RSS/Save Phase Error: ${rssError instanceof Error ? rssError.message : String(rssError)}`)
   }
 
   // 2. RSSの成否に関わらず、孤立キューの回収 Sweeper を必ず実行
@@ -593,12 +848,27 @@ export async function syncNews(options?: { deadlineBudgetMs?: number }): Promise
     console.log('Running orphaned QUEUED items recovery...')
     const recoveryResult = await recoverOrphanedQueuedItems(5, { deadline })
     recoveredCount = recoveryResult.recoveredCount
-    errors.push(...recoveryResult.errors)
+    queueFailureCount += recoveryResult.queueFailureCount
+    recoveryResult.errorDetails.forEach((error) => errorTracker.addError(error))
     console.log(`Recovery complete. Re-enqueued ${recoveredCount} orphaned items.`)
   } catch (sweeperError) {
     console.error('Error during orphaned QUEUED items recovery:', sweeperError)
-    errors.push(`Sweeper Phase Error: ${sweeperError instanceof Error ? sweeperError.message : String(sweeperError)}`)
+    errorTracker.addPhaseError(`Sweeper Phase Error: ${sweeperError instanceof Error ? sweeperError.message : String(sweeperError)}`)
   }
 
-  return { addedCount, recoveredCount, errors }
+  return {
+    addedCount,
+    recoveredCount,
+    errors: errorTracker.getErrors(),
+    itemsFound,
+    itemsSkipped,
+    feedTotalCount,
+    feedSuccessCount,
+    feedFailureCount,
+    queuedCount,
+    queueFailureCount,
+    feedResults,
+    errorDetails: errorTracker.getErrorDetails(),
+    errorTypes: errorTracker.getErrorTypes(),
+  }
 }

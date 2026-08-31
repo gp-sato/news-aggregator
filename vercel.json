@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/fetch-news",
       "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/cron/cleanup-job-logs",
+      "schedule": "0 3 * * *"
     }
   ],
   "functions": {

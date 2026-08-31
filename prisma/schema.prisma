@@ -66,8 +66,13 @@ model NewsItem {
 
   categories      NewsItemCategory[]
 
+  createdJobExecutionId String?
+  jobExecution          JobExecution? @relation("JobExecutionNewsItems", fields: [createdJobExecutionId], references: [id], onDelete: SetNull)
+
   createdAt       DateTime @default(now()) // DBへの保存日時
   updatedAt       DateTime @updatedAt      // レコード更新日時
+
+  @@index([createdJobExecutionId])
 }
 
 enum ImageFetchStatus {
@@ -76,6 +81,32 @@ enum ImageFetchStatus {
   SUCCESS
   NOT_FOUND
   FAILED
+}
+
+enum JobType {
+  RSS_SYNC
+  SWEEPER_ONLY
+  MANUAL_SYNC
+}
+
+enum JobStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL_SUCCESS
+  FAILED
+  TIMEOUT
+}
+
+enum FeedSyncStatus {
+  SUCCESS
+  FAILED
+  TIMEOUT
+}
+
+enum JobEventLevel {
+  INFO
+  WARN
+  ERROR
 }
 
 model NewsItemCategory {
@@ -90,5 +121,74 @@ model NewsItemCategory {
 
   @@id([newsItemId, categoryId])
   @@index([categoryId])
+}
+
+model JobExecution {
+  id                    String             @id @default(cuid())
+  jobType               JobType
+  status                JobStatus          @default(RUNNING)
+  triggerSource         String?
+  startedAt             DateTime           @default(now())
+  finishedAt            DateTime?
+  durationMs            Int?
+  feedTotalCount        Int                @default(0)
+  feedSuccessCount      Int                @default(0)
+  feedFailureCount      Int                @default(0)
+  itemsFound            Int                @default(0)
+  itemsCreated          Int                @default(0)
+  itemsSkipped          Int                @default(0)
+  itemsFailed           Int                @default(0)
+  queuedCount           Int                @default(0)
+  queueFailureCount     Int                @default(0)
+  recoveredQueuedCount   Int                @default(0)
+  errorCode             String?
+  errorMessage           String?
+  errorStack            String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  feedSyncExecutions    FeedSyncExecution[]
+  jobEvents             JobEvent[]
+  newsItems             NewsItem[]         @relation("JobExecutionNewsItems")
+
+  @@index([startedAt])
+  @@index([status])
+}
+
+model FeedSyncExecution {
+  id              String          @id @default(cuid())
+  jobExecutionId  String
+  sourceId        String
+  sourceName      String
+  sourceUrl       String
+  status          FeedSyncStatus
+  httpStatus      Int?
+  durationMs      Int?
+  itemsFound      Int             @default(0)
+  itemsCreated    Int             @default(0)
+  errorCode       String?
+  errorMessage    String?
+  createdAt       DateTime        @default(now())
+
+  jobExecution    JobExecution    @relation(fields: [jobExecutionId], references: [id], onDelete: Cascade)
+
+  @@index([jobExecutionId])
+  @@index([status])
+}
+
+model JobEvent {
+  id              String        @id @default(cuid())
+  jobExecutionId  String
+  eventType       String
+  level           JobEventLevel
+  message         String
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+
+  jobExecution    JobExecution  @relation(fields: [jobExecutionId], references: [id], onDelete: Cascade)
+
+  @@index([jobExecutionId])
+  @@index([level])
+  @@index([createdAt])
 }
 
