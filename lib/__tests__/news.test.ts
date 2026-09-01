@@ -39,7 +39,7 @@ describe('recoverOrphanedQueuedItems', () => {
 
     const result = await recoverOrphanedQueuedItems();
 
-    expect(result).toEqual({ recoveredCount: 0, errors: [] });
+    expect(result).toEqual({ recoveredCount: 0, queueFailureCount: 0, errors: [], errorDetails: [] });
     expect(prisma.newsItem.findMany).toHaveBeenCalledWith({
       where: {
         imageFetchStatus: 'QUEUED',
@@ -111,7 +111,7 @@ describe('recoverOrphanedQueuedItems', () => {
 
     const result = await recoverOrphanedQueuedItems();
 
-    expect(result).toEqual({ recoveredCount: 2, errors: [] });
+    expect(result).toEqual({ recoveredCount: 2, queueFailureCount: 0, errors: [], errorDetails: [] });
     expect(enqueueImageFetch).toHaveBeenCalledWith([
       { id: 'item-1', link: 'https://example.com/article1' },
       { id: 'item-2', link: 'https://example.com/article2' },
@@ -190,7 +190,9 @@ describe('recoverOrphanedQueuedItems', () => {
 
     expect(result).toEqual({
       recoveredCount: 2,
+      queueFailureCount: 1,
       errors: ['Queue enqueue failed: item-2'],
+      errorDetails: [{ type: 'queue', message: 'Queue enqueue failed: item-2' }],
     });
   });
 
@@ -212,6 +214,9 @@ describe('recoverOrphanedQueuedItems', () => {
 
     expect(result.recoveredCount).toBe(0);
     expect(result.errors).toContain('Queue enqueue failed: orphaned-1');
+    expect(result.errorDetails).toEqual([
+      { type: 'queue', message: 'Queue enqueue failed: orphaned-1' },
+    ]);
   });
 
   it('カスタムの閾値（分）を指定できる', async () => {
@@ -307,7 +312,7 @@ describe('fetchRssFeeds', () => {
       text: () => Promise.resolve(sampleRssXml),
     } as never);
 
-    const items = await fetchRssFeeds();
+    const result = await fetchRssFeeds();
 
     expect(global.fetch).toHaveBeenCalledWith(
       'https://example.com/rss.xml',
@@ -319,9 +324,11 @@ describe('fetchRssFeeds', () => {
       })
     );
 
-    expect(items.length).toBe(1);
-    expect(items[0].title).toBe('Test Article');
-    expect(items[0].link).toBe('https://example.com/article-1');
+    expect(result.items.length).toBe(1);
+    expect(result.items[0].title).toBe('Test Article');
+    expect(result.items[0].link).toBe('https://example.com/article-1');
+    expect(result.feedResults.length).toBe(1);
+    expect(result.feedResults[0].status).toBe('SUCCESS');
 
     global.fetch = originalFetch;
   });
@@ -348,9 +355,11 @@ describe('fetchRssFeeds', () => {
 
     global.fetch = vi.fn().mockRejectedValue(timeoutError);
 
-    const items = await fetchRssFeeds();
+    const result = await fetchRssFeeds();
 
-    expect(items).toEqual([]);
+    expect(result.items).toEqual([]);
+    expect(result.feedResults.length).toBe(1);
+    expect(result.feedResults[0].status).toBe('TIMEOUT');
     expect(prisma.source.update).toHaveBeenCalledWith({
       where: { id: 'source-timeout' },
       data: { lastError: expect.stringContaining('TimeoutError') },
@@ -437,6 +446,53 @@ describe('saveNewsToDb', () => {
     ]);
 
     expect(result.errors).toContain('Queue enqueue failed: new-item-1');
+    expect(result.errorDetails).toEqual([
+      { type: 'queue', message: 'Queue enqueue failed: new-item-1' },
+    ]);
+  });
+
+  it('jobExecutionIdをNewsItemに付与して保存する', async () => {
+    vi.mocked(prisma.newsItem.createMany).mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([
+      {
+        id: 'new-item-1',
+        sourceId: 'source-1',
+        link: 'https://example.com/article-1',
+        imageFetchStatus: 'QUEUED',
+      } as never,
+    ]);
+    vi.mocked(prisma.source.findMany).mockResolvedValue([
+      {
+        id: 'source-1',
+        defaultCategoryId: 'tech',
+      } as never,
+    ]);
+    vi.mocked(enqueueImageFetch).mockResolvedValue({
+      successCount: 1,
+      failureCount: 0,
+      failedIds: [],
+    });
+
+    const items = [
+      {
+        title: 'Article 1',
+        link: 'https://example.com/article-1',
+        sourceId: 'source-1',
+      },
+    ];
+
+    await saveNewsToDb(items, {
+      jobExecutionId: 'test-job-execution-id',
+    });
+
+    expect(prisma.newsItem.createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({
+          createdJobExecutionId: 'test-job-execution-id',
+        }),
+      ]),
+      skipDuplicates: true,
+    });
   });
 });
 
@@ -459,8 +515,19 @@ describe('syncNews', () => {
     expect(result).toHaveProperty('addedCount');
     expect(result).toHaveProperty('recoveredCount');
     expect(result).toHaveProperty('errors');
+    expect(result).toHaveProperty('itemsFound');
+    expect(result).toHaveProperty('itemsSkipped');
+    expect(result).toHaveProperty('feedTotalCount');
+    expect(result).toHaveProperty('feedSuccessCount');
+    expect(result).toHaveProperty('feedFailureCount');
+    expect(result).toHaveProperty('queuedCount');
+    expect(result).toHaveProperty('queueFailureCount');
+    expect(result).toHaveProperty('feedResults');
+    expect(result).toHaveProperty('errorDetails');
+    expect(result).toHaveProperty('errorTypes');
     expect(Array.isArray(result.errors)).toBe(true);
     expect(result.errors.length).toBe(0);
+    expect(result.errorTypes).toEqual({ phase: false, feed: false, queue: false });
   });
 
   it('RSSフェーズでエラーが発生した場合でも、errors配列に記録しSweeperを実行する', async () => {
@@ -485,6 +552,9 @@ describe('syncNews', () => {
     expect(result.addedCount).toBe(0);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]).toContain('Database connection failed');
+    expect(result.errorTypes.phase).toBe(true);
+    expect(result.errorTypes.feed).toBe(false);
+    expect(result.errorTypes.queue).toBe(false);
   });
 
   it('SweeperのQueue再投入失敗をerrors配列に記録する', async () => {
@@ -505,6 +575,40 @@ describe('syncNews', () => {
     const result = await syncNews();
 
     expect(result.errors).toContain('Queue enqueue failed: orphaned-1');
+    expect(result.errorTypes.queue).toBe(true);
+    expect(result.errorTypes.phase).toBe(false);
+    expect(result.errorDetails).toEqual([
+      { type: 'queue', message: 'Queue enqueue failed: orphaned-1' },
+    ]);
+  });
+
+  it('全Feedが失敗した場合、errors配列にエラーを記録する', async () => {
+    vi.mocked(prisma.source.findMany).mockResolvedValue([
+      {
+        id: 'source-1',
+        name: 'Source 1',
+        url: 'https://example.com/feed1.xml',
+        enabled: true,
+        defaultCategoryId: 'tech',
+      } as never,
+    ]);
+    vi.mocked(prisma.newsItem.findMany).mockResolvedValue([]);
+    // global.fetch をモックして失敗させる
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+
+    try {
+      const result = await syncNews();
+
+      expect(result.feedTotalCount).toBe(1);
+      expect(result.feedSuccessCount).toBe(0);
+      expect(result.feedFailureCount).toBe(1);
+      expect(result.errors).toContain('All 1 feeds failed to sync');
+      expect(result.errorTypes.phase).toBe(true);
+      expect(result.errorTypes.feed).toBe(true);
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });
 
