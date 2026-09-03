@@ -265,11 +265,8 @@ export async function fetchRssFeeds(): Promise<{ items: FeedItem[]; feedResults:
   const feedPromises = dbSources.map(async (source) => {
     const startTime = Date.now()
     try {
-      // 外部サーバーへの負荷軽減とアクセスの高速化のため、本番環境ではNext.jsのData Cache（10分間再検証）を適用してXMLを取得します。
-      // 開発環境では常に最新データを取得するため、キャッシュを無効にします。
-      const fetchOptions = process.env.NODE_ENV === 'production'
-        ? { next: { revalidate: 60 * 10 } }
-        : { cache: 'no-store' as const }
+      // RSSフィードは常に最新のニュースを取得する必要があるため、キャッシュを無効にします。
+      const fetchOptions = { cache: 'no-store' as const }
       const res = await fetch(source.url, {
         ...fetchOptions,
         signal: AbortSignal.timeout(8000), // 8秒でタイムアウト
