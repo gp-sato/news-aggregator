@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { prisma } from '../prisma';
 
 // Mock prisma
@@ -26,8 +26,9 @@ vi.mock('../queue', () => ({
   enqueueImageFetch: vi.fn(),
 }));
 
-import { fetchRssFeeds, recoverOrphanedQueuedItems, saveNewsToDb, syncNews } from '../news';
+import { fetchRssFeeds, recoverOrphanedQueuedItems, saveNewsToDb, syncNews, shouldRetryFetchError, fetchSingleRssFeed, HttpError } from '../news';
 import { enqueueImageFetch } from '../queue';
+import Parser from 'rss-parser';
 
 describe('recoverOrphanedQueuedItems', () => {
   beforeEach(() => {
@@ -612,5 +613,517 @@ describe('syncNews', () => {
   });
 });
 
+describe('shouldRetryFetchError', () => {
+  it('4xxエラーはリトライしない', () => {
+    const httpError = new HttpError('Not Found', 404);
+    
+    expect(shouldRetryFetchError(httpError)).toBe(false);
+  });
+
+  it('429はリトライする', () => {
+    const httpError = new HttpError('Too Many Requests', 429);
+    
+    expect(shouldRetryFetchError(httpError)).toBe(true);
+  });
+
+  it('AbortErrorはリトライする', () => {
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    
+    expect(shouldRetryFetchError(abortError)).toBe(true);
+  });
+
+  it('TimeoutErrorはリトライする', () => {
+    const timeoutError = new Error('Request timeout');
+    timeoutError.name = 'TimeoutError';
+    
+    expect(shouldRetryFetchError(timeoutError)).toBe(true);
+  });
+
+  it('terminatedエラーはリトライする', () => {
+    const terminatedError = new Error('The operation was terminated');
+    
+    expect(shouldRetryFetchError(terminatedError)).toBe(true);
+  });
+
+  it('networkエラーはリトライする', () => {
+    const networkError = new Error('Network error occurred');
+    
+    expect(shouldRetryFetchError(networkError)).toBe(true);
+  });
+
+  it('fetchエラーはリトライする', () => {
+    const fetchError = new Error('fetch failed');
+    
+    expect(shouldRetryFetchError(fetchError)).toBe(true);
+  });
+
+  it('未知のエラーはリトライしない', () => {
+    const unknownError = new Error('Unknown error');
+    
+    expect(shouldRetryFetchError(unknownError)).toBe(false);
+  });
+});
+
+describe('fetchSingleRssFeed', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('404エラーはリトライしない', async () => {
+    const mockSource = {
+      id: 'source-404',
+      name: '404 Source',
+      url: 'https://example.com/notfound.xml',
+    };
+
+    const parser = new Parser();
+
+    global.fetch = vi.fn()
+      .mockRejectedValueOnce(new HttpError('Failed to fetch XML. Status: 404', 404))
+      .mockRejectedValueOnce(new HttpError('Failed to fetch XML. Status: 404', 404));
+
+    const result = await fetchSingleRssFeed(mockSource, parser, 1);
+
+    expect(result.items).toEqual([]);
+    expect(result.feedResult.status).toBe('FAILED');
+    expect(global.fetch).toHaveBeenCalledTimes(1); // リトライなし
+  });
+
+  it('タイムアウトエラーは1回リトライする', async () => {
+    const mockSource = {
+      id: 'source-timeout',
+      name: 'Timeout Source',
+      url: 'https://example.com/timeout.xml',
+    };
+
+    const parser = new Parser();
+
+    const timeoutError = new Error('The operation was aborted due to timeout');
+    timeoutError.name = 'TimeoutError';
+
+    global.fetch = vi.fn()
+      .mockRejectedValueOnce(timeoutError)
+      .mockRejectedValueOnce(timeoutError);
+
+    const result = await fetchSingleRssFeed(mockSource, parser, 1);
+
+    expect(result.items).toEqual([]);
+    expect(result.feedResult.status).toBe('TIMEOUT');
+    expect(global.fetch).toHaveBeenCalledTimes(2); // 1回リトライ
+  });
+
+  it('terminatedエラーは1回リトライする', async () => {
+    const mockSource = {
+      id: 'source-terminated',
+      name: 'Terminated Source',
+      url: 'https://example.com/terminated.xml',
+    };
+
+    const parser = new Parser();
+
+    const terminatedError = new Error('The operation was terminated');
+
+    global.fetch = vi.fn()
+      .mockRejectedValueOnce(terminatedError)
+      .mockRejectedValueOnce(terminatedError);
+
+    const result = await fetchSingleRssFeed(mockSource, parser, 1);
+
+    expect(result.items).toEqual([]);
+    expect(result.feedResult.status).toBe('FAILED');
+    expect(global.fetch).toHaveBeenCalledTimes(2); // 1回リトライ
+  });
+
+  it('正常取得時はリトライしない', async () => {
+    const mockSource = {
+      id: 'source-success',
+      name: 'Success Source',
+      url: 'https://example.com/success.xml',
+    };
+
+    const parser = new Parser();
+
+    const sampleRssXml = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Test Feed</title>
+          <link>https://example.com</link>
+          <item>
+            <title>Test Article</title>
+            <link>https://example.com/article-1</link>
+            <pubDate>Thu, 20 Aug 2026 12:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(sampleRssXml),
+    } as never);
+
+    const result = await fetchSingleRssFeed(mockSource, parser, 1);
+
+    expect(result.items.length).toBe(1);
+    expect(result.feedResult.status).toBe('SUCCESS');
+    expect(global.fetch).toHaveBeenCalledTimes(1); // リトライなし
+  });
+});
+
+describe('RSS source URL updates', () => {
+  it('foodrink_gourmetは新しいURLを使用する', async () => {
+    const mockSource = {
+      id: 'foodrink_gourmet',
+      name: 'フードリンクニュース',
+      url: 'https://www.foodrink.co.jp/rss.xml',
+      enabled: true,
+      defaultCategoryId: 'gourmet',
+      language: 'ja',
+      country: 'JP',
+      lastFetchedAt: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue([mockSource]);
+
+    const sampleRssXml = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Foodrink News</title>
+          <link>https://www.foodrink.co.jp</link>
+          <item>
+            <title>Foodrink Article</title>
+            <link>https://www.foodrink.co.jp/article-1</link>
+            <pubDate>Thu, 20 Aug 2026 12:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(sampleRssXml),
+    } as never);
+
+    try {
+      await fetchRssFeeds();
+      
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://www.foodrink.co.jp/rss.xml',
+        expect.any(Object)
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('hatena_politicsは経済フィードを使用する', async () => {
+    const mockSource = {
+      id: 'hatena_politics',
+      name: 'はてなブックマーク（経済）',
+      url: 'https://b.hatena.ne.jp/hotentry/economics.rss',
+      enabled: true,
+      defaultCategoryId: 'business',
+      language: 'ja',
+      country: 'JP',
+      lastFetchedAt: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue([mockSource]);
+
+    const sampleRssXml = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>はてなブックマーク - 経済</title>
+          <link>https://b.hatena.ne.jp</link>
+          <item>
+            <title>Economics Article</title>
+            <link>https://example.com/economics-1</link>
+            <pubDate>Thu, 20 Aug 2026 12:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(sampleRssXml),
+    } as never);
+
+    try {
+      await fetchRssFeeds();
+      
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://b.hatena.ne.jp/hotentry/economics.rss',
+        expect.any(Object)
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('astroarts_scienceはHTTPS URLを使用する', async () => {
+    const mockSource = {
+      id: 'astroarts_science',
+      name: 'AstroArts',
+      url: 'https://www.astroarts.co.jp/article/feed.atom',
+      enabled: true,
+      defaultCategoryId: 'science',
+      language: 'ja',
+      country: 'JP',
+      lastFetchedAt: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue([mockSource]);
+
+    const sampleAtomXml = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>AstroArts Articles</title>
+        <link href="https://www.astroarts.co.jp"/>
+        <entry>
+          <title>AstroArts Article</title>
+          <link href="https://www.astroarts.co.jp/article-1"/>
+          <published>2026-08-20T12:00:00Z</published>
+        </entry>
+      </feed>
+    `;
+
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(sampleAtomXml),
+    } as never);
+
+    try {
+      await fetchRssFeeds();
+      
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://www.astroarts.co.jp/article/feed.atom',
+        expect.any(Object)
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+describe('全フィード並列取得と集計結果', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('複数フィードを並列取得し、集計結果が正しく記録される', async () => {
+    const mockSources = [
+      {
+        id: 'source-1',
+        name: 'Source 1',
+        url: 'https://example.com/feed1.xml',
+        enabled: true,
+        defaultCategoryId: 'tech',
+        language: 'ja',
+        country: 'JP',
+        lastFetchedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'source-2',
+        name: 'Source 2',
+        url: 'https://example.com/feed2.xml',
+        enabled: true,
+        defaultCategoryId: 'business',
+        language: 'ja',
+        country: 'JP',
+        lastFetchedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'source-3',
+        name: 'Source 3',
+        url: 'https://example.com/feed3.xml',
+        enabled: true,
+        defaultCategoryId: 'sports',
+        language: 'ja',
+        country: 'JP',
+        lastFetchedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue(mockSources);
+
+    const sampleRssXml1 = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Feed 1</title>
+          <item>
+            <title>Article 1-1</title>
+            <link>https://example.com/article-1-1</link>
+            <pubDate>Thu, 20 Aug 2026 12:00:00 GMT</pubDate>
+          </item>
+          <item>
+            <title>Article 1-2</title>
+            <link>https://example.com/article-1-2</link>
+            <pubDate>Thu, 20 Aug 2026 13:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    const sampleRssXml2 = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Feed 2</title>
+          <item>
+            <title>Article 2-1</title>
+            <link>https://example.com/article-2-1</link>
+            <pubDate>Thu, 20 Aug 2026 14:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    const sampleRssXml3 = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Feed 3</title>
+          <item>
+            <title>Article 3-1</title>
+            <link>https://example.com/article-3-1</link>
+            <pubDate>Thu, 20 Aug 2026 15:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(sampleRssXml1),
+      } as never)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(sampleRssXml2),
+      } as never)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(sampleRssXml3),
+      } as never);
+
+    const result = await fetchRssFeeds();
+
+    expect(result.items.length).toBe(4);
+    expect(result.feedResults.length).toBe(3);
+    expect(result.feedResults[0].status).toBe('SUCCESS');
+    expect(result.feedResults[0].itemsFound).toBe(2);
+    expect(result.feedResults[1].status).toBe('SUCCESS');
+    expect(result.feedResults[1].itemsFound).toBe(1);
+    expect(result.feedResults[2].status).toBe('SUCCESS');
+    expect(result.feedResults[2].itemsFound).toBe(1);
+  });
+
+  it('一部フィードが失敗しても他のフィードは正常に取得される', async () => {
+    const mockSources = [
+      {
+        id: 'source-success',
+        name: 'Success Source',
+        url: 'https://example.com/success.xml',
+        enabled: true,
+        defaultCategoryId: 'tech',
+        language: 'ja',
+        country: 'JP',
+        lastFetchedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'source-fail',
+        name: 'Fail Source',
+        url: 'https://example.com/fail.xml',
+        enabled: true,
+        defaultCategoryId: 'business',
+        language: 'ja',
+        country: 'JP',
+        lastFetchedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    vi.mocked(prisma.source.findMany).mockResolvedValue(mockSources);
+
+    const sampleRssXml = `
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0">
+        <channel>
+          <title>Success Feed</title>
+          <item>
+            <title>Success Article</title>
+            <link>https://example.com/success-article</link>
+            <pubDate>Thu, 20 Aug 2026 12:00:00 GMT</pubDate>
+          </item>
+        </channel>
+      </rss>
+    `;
+
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(sampleRssXml),
+      } as never)
+      .mockRejectedValueOnce(new HttpError('Failed to fetch XML. Status: 404', 404));
+
+    const result = await fetchRssFeeds();
+
+    expect(result.items.length).toBe(1);
+    expect(result.feedResults.length).toBe(2);
+    expect(result.feedResults[0].status).toBe('SUCCESS');
+    expect(result.feedResults[0].itemsFound).toBe(1);
+    expect(result.feedResults[1].status).toBe('FAILED');
+    expect(result.feedResults[1].itemsFound).toBe(0);
+  });
+});
 
 
