@@ -49,7 +49,7 @@ export interface SyncErrorDetail {
 /**
  * HTTPエラー情報を含むカスタムエラー型
  */
-class HttpError extends Error {
+export class HttpError extends Error {
   httpStatus?: number
 
   constructor(message: string, httpStatus?: number) {
@@ -57,6 +57,164 @@ class HttpError extends Error {
     this.name = 'HttpError'
     this.httpStatus = httpStatus
   }
+}
+
+/**
+ * リトライ可能かどうかを判定する
+ * 4xxエラーはリトライしない（恒久的な失敗）ただし429（レート制限）は例外
+ * タイムアウト、ネットワークエラー、AbortErrorは1回だけリトライする
+ */
+export function shouldRetryFetchError(error: unknown): boolean {
+  if (error instanceof HttpError && error.httpStatus) {
+    // 429 (Too Many Requests) is retryable (rate limit)
+    if (error.httpStatus === 429) {
+      return true
+    }
+    // Other 4xx errors are permanent, don't retry
+    if (error.httpStatus >= 400 && error.httpStatus < 500) {
+      return false
+    }
+  }
+  
+  if (error instanceof Error) {
+    const retryableErrorNames = ['AbortError', 'TimeoutError', 'TypeError']
+    const errorMessage = error.message.toLowerCase()
+    
+    // Retry for timeout, abort, and network errors
+    if (retryableErrorNames.includes(error.name)) {
+      return true
+    }
+    
+    // Retry for "terminated" errors (common in network issues)
+    if (errorMessage.includes('terminated')) {
+      return true
+    }
+    
+    // Retry for network-related errors
+    if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
+      return true
+    }
+  }
+  
+  return false
+}
+
+/**
+ * 単一のRSSフィードを取得し、リトライロジックを適用する
+ * @param source RSSソース情報
+ * @param parser RSSパーサー
+ * @param maxRetries 最大リトライ回数（デフォルト: 1）
+ * @returns フィードアイテムと取得結果
+ */
+export async function fetchSingleRssFeed(
+  source: { id: string; name: string; url: string },
+  parser: Parser,
+  maxRetries: number = 1
+): Promise<{ items: FeedItem[]; feedResult: FeedFetchResult }> {
+  const startTime = Date.now()
+  let lastError: unknown = null
+  let attempt = 0
+  
+  while (attempt <= maxRetries) {
+    try {
+      const fetchOptions = { cache: 'no-store' as const }
+      const res = await fetch(source.url, {
+        ...fetchOptions,
+        signal: AbortSignal.timeout(8000), // 8秒でタイムアウト
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      })
+      
+      if (!res.ok) {
+        throw new HttpError(`Failed to fetch XML. Status: ${res.status}`, res.status)
+      }
+      
+      const xmlString = await res.text()
+      const feed = await parser.parseString(xmlString)
+
+      // 最終取得日時を更新
+      await prisma.source.update({
+        where: { id: source.id },
+        data: { lastFetchedAt: new Date(), lastError: null },
+      }).catch((err) => console.error(`Failed to update lastFetchedAt for source ${source.id}:`, err))
+
+      const durationMs = Date.now() - startTime
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const items = feed.items.map((item: any) => ({
+        guid: item.guid,
+        title: item.title || '',
+        link: item.link || '',
+        isoDate: item.isoDate || item.pubDate,
+        creator: item.creator,
+        summary: item.summary,
+        content: item.content,
+        contentSnippet: item.contentSnippet,
+        categories: item.categories || [],
+        enclosure: item.enclosure ? {
+          url: item.enclosure.url,
+          length: item.enclosure.length,
+          type: item.enclosure.type,
+        } : undefined,
+        sourceId: source.id,
+        mediaThumbnail: item.mediaThumbnail,
+        hatenaImageUrl: item.hatenaImageUrl,
+        contentEncoded: item.contentEncoded,
+      }))
+
+      const feedResult: FeedFetchResult = {
+        sourceId: source.id,
+        sourceName: source.name,
+        sourceUrl: source.url,
+        status: FeedSyncStatus.SUCCESS,
+        httpStatus: res.status,
+        durationMs,
+        itemsFound: items.length,
+        itemsCreated: 0, // Will be updated after saving to DB
+      }
+
+      return { items, feedResult }
+    } catch (error) {
+      lastError = error
+      attempt++
+      
+      // リトライ可能なエラーかどうかを判定
+      if (attempt <= maxRetries && shouldRetryFetchError(error)) {
+        console.log(`Retry attempt ${attempt}/${maxRetries} for ${source.name} due to error:`, error)
+        continue // Retry
+      }
+      
+      // リトライ不可または最大リトライ回数に達した場合
+      break
+    }
+  }
+  
+  // ここに到達した場合は全ての試行が失敗
+  const durationMs = Date.now() - startTime
+
+  // エラー情報を記録
+  await prisma.source.update({
+    where: { id: source.id },
+    data: { lastError: String(lastError) },
+  }).catch((err) => console.error(`Failed to update lastError for source ${source.id}:`, err))
+
+  const isTimeout = lastError instanceof Error && (lastError.name === 'AbortError' || lastError.name === 'TimeoutError')
+  const httpStatus = lastError instanceof HttpError ? lastError.httpStatus : undefined
+  const feedResult: FeedFetchResult = {
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceUrl: source.url,
+    status: isTimeout ? FeedSyncStatus.TIMEOUT : FeedSyncStatus.FAILED,
+    httpStatus,
+    durationMs,
+    itemsFound: 0,
+    itemsCreated: 0,
+    errorCode: lastError instanceof Error ? lastError.name : 'UNKNOWN',
+    errorMessage: lastError instanceof Error ? lastError.message : String(lastError),
+  }
+
+  return { items: [], feedResult }
 }
 
 /**
@@ -263,98 +421,7 @@ export async function fetchRssFeeds(): Promise<{ items: FeedItem[]; feedResults:
   })
 
   const feedPromises = dbSources.map(async (source) => {
-    const startTime = Date.now()
-    try {
-      // RSSフィードは常に最新のニュースを取得する必要があるため、キャッシュを無効にします。
-      const fetchOptions = { cache: 'no-store' as const }
-      const res = await fetch(source.url, {
-        ...fetchOptions,
-        signal: AbortSignal.timeout(8000), // 8秒でタイムアウト
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-      })
-      if (!res.ok) {
-        throw new HttpError(`Failed to fetch XML. Status: ${res.status}`, res.status)
-      }
-      const xmlString = await res.text()
-      const feed = await parser.parseString(xmlString)
-
-      // 最終取得日時を更新
-      await prisma.source.update({
-        where: { id: source.id },
-        data: { lastFetchedAt: new Date(), lastError: null },
-      }).catch((err) => console.error(`Failed to update lastFetchedAt for source ${source.id}:`, err))
-
-      const durationMs = Date.now() - startTime
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const items = feed.items.map((item: any) => ({
-        guid: item.guid,
-        title: item.title || '',
-        link: item.link || '',
-        isoDate: item.isoDate || item.pubDate,
-        creator: item.creator,
-        summary: item.summary,
-        content: item.content,
-        contentSnippet: item.contentSnippet,
-        categories: item.categories || [],
-        enclosure: item.enclosure ? {
-          url: item.enclosure.url,
-          length: item.enclosure.length,
-          type: item.enclosure.type,
-        } : undefined,
-        sourceId: source.id,
-        mediaThumbnail: item.mediaThumbnail,
-        hatenaImageUrl: item.hatenaImageUrl,
-        contentEncoded: item.contentEncoded,
-      }))
-
-      const feedResult: FeedFetchResult = {
-        sourceId: source.id,
-        sourceName: source.name,
-        sourceUrl: source.url,
-        status: FeedSyncStatus.SUCCESS,
-        httpStatus: res.status,
-        durationMs,
-        itemsFound: items.length,
-        itemsCreated: 0, // Will be updated after saving to DB
-      }
-
-      return { items, feedResult }
-    } catch (error) {
-      const durationMs = Date.now() - startTime
-
-      // タイムアウトまたはネットワークエラーの場合は安全にスキップ
-      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
-        console.error(`RSS fetch timeout for ${source.name}:`, error)
-      } else {
-        console.error(`Failed to fetch RSS from ${source.name}:`, error)
-      }
-
-      // エラー情報を記録
-      await prisma.source.update({
-        where: { id: source.id },
-        data: { lastError: String(error) },
-      }).catch((err) => console.error(`Failed to update lastError for source ${source.id}:`, err))
-
-      const isTimeout = error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
-      const httpStatus = error instanceof HttpError ? error.httpStatus : undefined
-      const feedResult: FeedFetchResult = {
-        sourceId: source.id,
-        sourceName: source.name,
-        sourceUrl: source.url,
-        status: isTimeout ? FeedSyncStatus.TIMEOUT : FeedSyncStatus.FAILED,
-        httpStatus,
-        durationMs,
-        itemsFound: 0,
-        itemsCreated: 0,
-        errorCode: error instanceof Error ? error.name : 'UNKNOWN',
-        errorMessage: error instanceof Error ? error.message : String(error),
-      }
-
-      return { items: [], feedResult }
-    }
+    return fetchSingleRssFeed(source, parser, 1) // 最大1回リトライ
   })
 
   const results = await Promise.allSettled(feedPromises)

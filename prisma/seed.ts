@@ -157,9 +157,9 @@ async function main() {
     },
     {
       id: 'hatena_politics',
-      name: 'はてなブックマーク (政治)',
-      url: 'https://b.hatena.ne.jp/hotentry/politics.rss',
-      defaultCategoryId: 'politics',
+      name: 'はてなブックマーク（経済）',
+      url: 'https://b.hatena.ne.jp/hotentry/economics.rss',
+      defaultCategoryId: 'business',
       language: 'ja',
       country: 'JP',
     },
@@ -236,7 +236,7 @@ async function main() {
     {
       id: 'astroarts_science',
       name: 'AstroArts',
-      url: 'http://www.astroarts.co.jp/article/feed.atom',
+      url: 'https://www.astroarts.co.jp/article/feed.atom',
       defaultCategoryId: 'science',
       language: 'ja',
       country: 'JP',
@@ -288,7 +288,7 @@ async function main() {
     {
       id: 'foodrink_gourmet',
       name: 'フードリンクニュース',
-      url: 'https://www.foodrink.co.jp/feed/',
+      url: 'https://www.foodrink.co.jp/rss.xml',
       defaultCategoryId: 'gourmet',
       language: 'ja',
       country: 'JP',
