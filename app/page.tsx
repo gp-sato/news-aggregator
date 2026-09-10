@@ -5,7 +5,7 @@ import { getNewsFromDb } from '@/lib/news';
 import { NewsList, type NewsItem } from '@/components/news-list';
 import { prisma } from '@/lib/prisma';
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60; // Revalidate every 60 seconds for ISR
 
 export const metadata: Metadata = {
   title: 'NexusFeed - Premium Feed',

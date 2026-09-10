@@ -10,13 +10,19 @@ if (process.env.NODE_ENV === 'production') {
   const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL as string,
   })
-  prismaInstance = new PrismaClient({ adapter })
+  prismaInstance = new PrismaClient({ 
+    adapter,
+    log: ['error'],
+  })
 } else {
   if (!globalForPrisma.prisma) {
     const adapter = new PrismaPg({
       connectionString: process.env.DATABASE_URL as string,
     })
-    globalForPrisma.prisma = new PrismaClient({ adapter })
+    globalForPrisma.prisma = new PrismaClient({ 
+      adapter,
+      log: ['query', 'error', 'warn'],
+    })
   }
   prismaInstance = globalForPrisma.prisma
 }

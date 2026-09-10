@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getNewsFromDb } from '@/lib/news';
+import crypto from 'crypto';
+
+const instanceId = crypto.randomUUID();
+let requestCount = 0;
 
 export async function GET(request: NextRequest) {
+  const handlerStart = performance.now();
+  requestCount++;
+
   const { searchParams } = new URL(request.url);
   const category = searchParams.get('category') || 'all';
   const source = searchParams.get('source') || 'all';
@@ -16,6 +23,7 @@ export async function GET(request: NextRequest) {
   const skip = (validatedPage - 1) * validatedLimit;
 
   try {
+    const queryStart = performance.now();
     const items = await getNewsFromDb({
       category,
       source: source !== 'all' ? source : undefined,
@@ -23,6 +31,19 @@ export async function GET(request: NextRequest) {
       skip,
       take: validatedLimit,
     });
+    const queryMs = performance.now() - queryStart;
+    const handlerMs = performance.now() - handlerStart;
+
+    console.log(JSON.stringify({
+      event: 'news_timing',
+      instanceId,
+      requestCount,
+      processUptime: process.uptime(),
+      vercelRegion: process.env.VERCEL_REGION,
+      vercelId: request.headers.get('x-vercel-id'),
+      queryMs,
+      handlerMs,
+    }));
 
     const cacheControl = process.env.NODE_ENV === 'production'
       ? 'public, s-maxage=60, stale-while-revalidate=30'
