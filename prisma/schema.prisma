@@ -73,6 +73,8 @@ model NewsItem {
   updatedAt       DateTime @updatedAt      // レコード更新日時
 
   @@index([createdJobExecutionId])
+  @@index([pubDate(sort: Desc)])
+  @@index([sourceId])
 }
 
 enum ImageFetchStatus {

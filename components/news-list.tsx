@@ -1,6 +1,8 @@
 'use client';
 
+import { Suspense } from 'react';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import useSWRInfinite from 'swr/infinite';
 
 export interface NewsItem {
@@ -37,11 +39,6 @@ export interface NewsItem {
   updatedAt: string;
 }
 
-interface NewsListProps {
-  initialItems: NewsItem[];
-  currentCategory: string;
-}
-
 const fetcher = (url: string) => fetch(url).then((res) => {
   if (!res.ok) {
     throw new Error('Failed to fetch data');
@@ -61,12 +58,18 @@ function formatDate(dateInput: string | null | undefined) {
   }).format(date);
 }
 
-export function NewsList({ initialItems, currentCategory }: NewsListProps) {
+function NewsListContent() {
+  const searchParams = useSearchParams();
+  const urlCategory = searchParams.get('category') || 'all';
+  
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
   const trimmedSearchQuery = searchQuery.trim();
+  
+  // URLパラメータのカテゴリを使用
+  const effectiveCategory = urlCategory;
 
   // State to manage bookmarks and mounted status
   const [mounted, setMounted] = useState(false);
@@ -107,12 +110,12 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
   const getKey = (pageIndex: number, previousPageData: NewsItem[]) => {
     // If showing bookmarks, do not fetch from server API
-    if (currentCategory === 'bookmarks') return null;
+    if (effectiveCategory === 'bookmarks') return null;
 
     // 最後に到達したか、前のデータが空の場合は null を返してフェッチを停止する
     if (previousPageData && !previousPageData.length) return null;
     const params = new URLSearchParams({
-      category: currentCategory,
+      category: effectiveCategory,
       page: String(pageIndex + 1),
       limit: '20',
     });
@@ -128,7 +131,6 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
     getKey,
     fetcher,
     {
-      fallbackData: (trimmedSearchQuery || currentCategory === 'bookmarks') ? undefined : [initialItems],
       revalidateFirstPage: false,
       revalidateOnMount: false,
       persistSize: false,
@@ -151,7 +153,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
   // Determine items to render and filter out duplicates by ID
   const newsItems = useMemo(() => {
     let items: NewsItem[];
-    if (currentCategory === 'bookmarks') {
+    if (effectiveCategory === 'bookmarks') {
       items = mounted ? filteredBookmarks : [];
     } else {
       items = data ? data.flat() : [];
@@ -166,27 +168,27 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
       seen.add(item.id);
       return true;
     });
-  }, [currentCategory, mounted, filteredBookmarks, data]);
+  }, [effectiveCategory, mounted, filteredBookmarks, data]);
 
   const isSearching = trimmedSearchQuery.length > 0;
   const resultLabel = useMemo(() => {
     if (!isSearching) return null;
     return `${trimmedSearchQuery} の検索結果`;
   }, [isSearching, trimmedSearchQuery]);
-  const isLoadingInitialData = currentCategory === 'bookmarks' ? false : (!data && !error);
+  const isLoadingInitialData = effectiveCategory === 'bookmarks' ? false : (!data && !error);
   const isLoadingMore =
-    currentCategory === 'bookmarks'
+    effectiveCategory === 'bookmarks'
       ? false
       : isLoadingInitialData || (size > 0 && data && typeof data[size - 1] === 'undefined');
   
   // 取得された最後のページのアイテム数が20未満の場合、または空の場合に「最後まで読み込み完了」とする
   const isEmpty =
-    currentCategory === 'bookmarks'
+    effectiveCategory === 'bookmarks'
       ? mounted && newsItems.length === 0
       : data?.[0]?.length === 0;
 
   const isReachingEnd =
-    currentCategory === 'bookmarks'
+    effectiveCategory === 'bookmarks'
       ? true
       : isEmpty || (data && data[data.length - 1]?.length < 20);
 
@@ -217,7 +219,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
   useEffect(() => {
     // Reset size when category or search changes to load new data
     setSize(1);
-  }, [currentCategory, trimmedSearchQuery, setSize]);
+  }, [effectiveCategory, trimmedSearchQuery, setSize]);
 
   useEffect(() => {
     if (isSearchOpen && searchInputRef.current) {
@@ -539,7 +541,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
 
         {!isLoadingMore && isEmpty && (
           <div className="glass rounded-2xl p-12 text-center w-full flex flex-col items-center justify-center space-y-4">
-            {currentCategory === 'bookmarks' && !isSearching ? (
+            {effectiveCategory === 'bookmarks' && !isSearching ? (
               <>
                 <div className="p-4 bg-accent/10 text-accent rounded-full border border-accent/25 animate-bounce">
                   <svg
@@ -573,5 +575,13 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
         )}
       </div>
     </div>
+  );
+}
+
+export function NewsList() {
+  return (
+    <Suspense fallback={<div className="min-h-[400px]">Loading news...</div>}>
+      <NewsListContent />
+    </Suspense>
   );
 }
