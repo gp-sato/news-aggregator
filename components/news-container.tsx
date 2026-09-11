@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { NewsList } from './news-list';
 
@@ -24,7 +25,7 @@ function NewsContent({ categories }: NewsContainerProps) {
         {categories.map((category) => {
           const isActive = currentCategory === category.id;
           return (
-            <a
+            <Link
               key={category.id}
               href={category.id === 'all' ? '/' : `/?category=${category.id}`}
               className={`px-4 py-2 text-sm font-medium transition-colors duration-200 -mb-px whitespace-nowrap ${
@@ -34,7 +35,7 @@ function NewsContent({ categories }: NewsContainerProps) {
               }`}
             >
               {category.label}
-            </a>
+            </Link>
           );
         })}
       </div>
