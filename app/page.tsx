@@ -57,18 +57,46 @@ export default async function NewsPage({ searchParams }: PageProps) {
   const resolvedSearchParams = await searchParams;
   const currentCategory = resolvedSearchParams.category || 'all';
 
-  // DBからカテゴリ一覧を取得
-  const dbCategories = await prisma.category.findMany({
-    orderBy: { sortOrder: 'asc' },
-  });
+  // eslint-disable-next-line react-hooks/purity
+  const ssrStart = performance.now();
+
+  // 並列化されたDBクエリ実行
+  const [categoriesResult, newsResult] = await Promise.all([
+    (async () => {
+      // eslint-disable-next-line react-hooks/purity
+      const start = performance.now();
+      const categories = await prisma.category.findMany({
+        orderBy: { sortOrder: 'asc' },
+      });
+      // eslint-disable-next-line react-hooks/purity
+      return { categories, ms: performance.now() - start };
+    })(),
+    (async () => {
+      // eslint-disable-next-line react-hooks/purity
+      const start = performance.now();
+      const news = await getNews(currentCategory, 0, 20);
+      // eslint-disable-next-line react-hooks/purity
+      return { news, ms: performance.now() - start };
+    })(),
+  ]);
+
+  // eslint-disable-next-line react-hooks/purity
+  const totalSsrMs = performance.now() - ssrStart;
+
+  console.log(JSON.stringify({
+    event: 'ssr_timing',
+    categoryMs: categoriesResult.ms,
+    newsMs: newsResult.ms,
+    totalSsrMs,
+  }));
 
   const tabs = [
     { id: 'all', label: 'すべて' },
     { id: 'bookmarks', label: '後で読む' },
-    ...dbCategories.map((c) => ({ id: c.id, label: c.label })),
+    ...categoriesResult.categories.map((c) => ({ id: c.id, label: c.label })),
   ];
 
-  const { items } = await getNews(currentCategory, 0, 20);
+  const { items } = newsResult.news;
 
   return (
     <main className="min-h-screen w-full max-w-4xl mx-auto px-3 py-8 sm:px-4 sm:py-10 md:px-8 md:py-12 overflow-x-hidden">

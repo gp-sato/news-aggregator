@@ -130,6 +130,7 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
     {
       fallbackData: (trimmedSearchQuery || currentCategory === 'bookmarks') ? undefined : [initialItems],
       revalidateFirstPage: false,
+      revalidateOnMount: false,
       persistSize: false,
     }
   );
@@ -214,12 +215,13 @@ export function NewsList({ initialItems, currentCategory }: NewsListProps) {
   }, [isLoadingMore, isReachingEnd, setSize]);
 
   useEffect(() => {
+    // Reset size when category or search changes to load new data
     setSize(1);
   }, [currentCategory, trimmedSearchQuery, setSize]);
 
   useEffect(() => {
-    if (isSearchOpen) {
-      searchInputRef.current?.focus();
+    if (isSearchOpen && searchInputRef.current) {
+      searchInputRef.current.focus();
     }
   }, [isSearchOpen]);
 
