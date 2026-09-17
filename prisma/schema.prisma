@@ -75,6 +75,7 @@ model NewsItem {
   @@index([createdJobExecutionId])
   @@index([pubDate(sort: Desc)])
   @@index([sourceId])
+  @@index([createdAt, id])
 }
 
 enum ImageFetchStatus {
@@ -89,6 +90,7 @@ enum JobType {
   RSS_SYNC
   SWEEPER_ONLY
   MANUAL_SYNC
+  NEWS_CLEANUP
 }
 
 enum JobStatus {
@@ -143,6 +145,7 @@ model JobExecution {
   queuedCount           Int                @default(0)
   queueFailureCount     Int                @default(0)
   recoveredQueuedCount   Int                @default(0)
+  deletedNewsCount      Int                @default(0)
   errorCode             String?
   errorMessage           String?
   errorStack            String?

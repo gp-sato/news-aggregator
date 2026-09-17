@@ -12,6 +12,7 @@ export interface JobExecutionSummary {
   queuedCount?: number
   queueFailureCount?: number
   recoveredQueuedCount?: number
+  deletedNewsCount?: number
   errorCode?: string
   errorMessage?: string
   errorStack?: string
