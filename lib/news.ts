@@ -384,19 +384,29 @@ export async function fetchOgImage(url: string): Promise<string | null> {
 
 /**
  * データベースの画像情報とステータスを更新します。
+ * If the record has been deleted (e.g., by cleanup), this function returns without error.
  */
 export async function updateImageStatus(
   id: string,
   imageUrl: string | null,
   status: ImageFetchStatus
 ) {
-  return prisma.newsItem.update({
-    where: { id },
-    data: {
-      imageUrl,
-      imageFetchStatus: status,
-    },
-  });
+  try {
+    return await prisma.newsItem.update({
+      where: { id },
+      data: {
+        imageUrl,
+        imageFetchStatus: status,
+      },
+    });
+  } catch (error) {
+    // If the record was deleted during processing, skip silently
+    if (typeof error === 'object' && error !== null && 'code' in error && (error as { code: string }).code === 'P2025') {
+      console.log(`News item ${id} was deleted during image processing, skipping update.`);
+      return null;
+    }
+    throw error;
+  }
 }
 
 

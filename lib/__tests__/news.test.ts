@@ -7,6 +7,7 @@ vi.mock('../prisma', () => ({
     newsItem: {
       findMany: vi.fn(),
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      update: vi.fn(),
     },
     source: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -26,7 +27,7 @@ vi.mock('../queue', () => ({
   enqueueImageFetch: vi.fn(),
 }));
 
-import { fetchRssFeeds, recoverOrphanedQueuedItems, saveNewsToDb, syncNews, shouldRetryFetchError, fetchSingleRssFeed, HttpError } from '../news';
+import { fetchRssFeeds, recoverOrphanedQueuedItems, saveNewsToDb, syncNews, shouldRetryFetchError, fetchSingleRssFeed, HttpError, updateImageStatus } from '../news';
 import { enqueueImageFetch } from '../queue';
 import Parser from 'rss-parser';
 
@@ -1123,6 +1124,53 @@ describe('全フィード並列取得と集計結果', () => {
     expect(result.feedResults[0].itemsFound).toBe(1);
     expect(result.feedResults[1].status).toBe('FAILED');
     expect(result.feedResults[1].itemsFound).toBe(0);
+  });
+});
+
+describe('updateImageStatus', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('正常にステータスと画像URLを更新する', async () => {
+    const mockUpdatedItem = {
+      id: 'news-item-1',
+      imageUrl: 'https://example.com/image.jpg',
+      imageFetchStatus: 'SUCCESS',
+    };
+    vi.mocked(prisma.newsItem.update).mockResolvedValue(mockUpdatedItem as never);
+
+    const result = await updateImageStatus('news-item-1', 'https://example.com/image.jpg', 'SUCCESS');
+
+    expect(result).toEqual(mockUpdatedItem);
+    expect(prisma.newsItem.update).toHaveBeenCalledWith({
+      where: { id: 'news-item-1' },
+      data: {
+        imageUrl: 'https://example.com/image.jpg',
+        imageFetchStatus: 'SUCCESS',
+      },
+    });
+  });
+
+  it('記事がクリーンアップ等で削除されていた場合（P2025エラー）は例外を投げずにnullを返す', async () => {
+    const p2025Error = new Error('Record to update not found.');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (p2025Error as any).code = 'P2025';
+
+    vi.mocked(prisma.newsItem.update).mockRejectedValue(p2025Error);
+
+    const result = await updateImageStatus('news-item-1', 'https://example.com/image.jpg', 'SUCCESS');
+
+    expect(result).toBeNull();
+  });
+
+  it('P2025以外のエラーは再スローする', async () => {
+    const dbError = new Error('Database connection failed');
+    vi.mocked(prisma.newsItem.update).mockRejectedValue(dbError);
+
+    await expect(
+      updateImageStatus('news-item-1', 'https://example.com/image.jpg', 'SUCCESS')
+    ).rejects.toThrow('Database connection failed');
   });
 });
 
